@@ -44,18 +44,15 @@ jobs:
           fi
           echo "Toolchain URL: $TOOLCHAIN_URL"
           curl -L -o /tmp/toolchain.tar.xz "$TOOLCHAIN_URL"
-          mkdir -p $THEOS/toolchain/linux
-          tar xJf /tmp/toolchain.tar.xz -C $THEOS/toolchain/linux
+          # Tarball top-level is "linux/"; extract at $THEOS/toolchain so we end
+          # up with $THEOS/toolchain/linux/iphone/bin/clang (not doubly nested).
+          rm -rf $THEOS/toolchain/linux
+          mkdir -p $THEOS/toolchain
+          tar xJf /tmp/toolchain.tar.xz -C $THEOS/toolchain
           echo "--- layout ---"
+          ls $THEOS/toolchain
           ls $THEOS/toolchain/linux
-          # Normalize: tarball may top-level be "iphone/", or "swift-X.Y-ubuntuZZ/iphone/"
-          if [ ! -d $THEOS/toolchain/linux/iphone ]; then
-            inner=$(find $THEOS/toolchain/linux -maxdepth 2 -type d -name iphone | head -1)
-            if [ -n "$inner" ]; then
-              mv "$inner" $THEOS/toolchain/linux/iphone
-            fi
-          fi
-          ls $THEOS/toolchain/linux/iphone/bin/ | head -10
+          ls $THEOS/toolchain/linux/iphone/bin/ | head -5
           $THEOS/toolchain/linux/iphone/bin/clang --version
 
       - name: Install iOS SDK 16.5 (sparse)
