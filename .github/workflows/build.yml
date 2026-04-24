@@ -104,7 +104,11 @@ jobs:
           ARCHS: "arm64 arm64e"
           TARGET: "iphone:clang:latest:14.0"
           FINALPACKAGE: "1"
+          ADDITIONAL_LDFLAGS: "-L/home/runner/theos/lib"
         run: |
+          # Mirror libsandy stub into rootless lib dir too, belt-and-suspenders.
+          mkdir -p $THEOS/lib/iphone/rootless
+          cp $THEOS/lib/libsandy.dylib $THEOS/lib/iphone/rootless/ || true
           make clean || true
           make package
           ls -la packages/
