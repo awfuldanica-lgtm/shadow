@@ -66,20 +66,37 @@ jobs:
           mv iPhoneOS16.5.sdk $THEOS/sdks/
           ls $THEOS/sdks/
 
-      - name: Build & install libSandy (external dependency)
-        env:
-          THEOS: /home/runner/theos
+      - name: Install libSandy header + link-time stub
         run: |
-          git clone --depth=1 https://github.com/opa334/libSandy.git /tmp/libsandy
-          cd /tmp/libsandy
-          THEOS_PACKAGE_SCHEME=rootless ARCHS="arm64 arm64e" \
-            TARGET=iphone:clang:latest:14.0 make
+          # Grab the real header from upstream.
           mkdir -p $THEOS/include $THEOS/lib
-          cp libSandy.h $THEOS/include/
-          dylib=$(find .theos -name 'libsandy.dylib' | head -1)
-          echo "Built libsandy.dylib at: $dylib"
-          cp "$dylib" $THEOS/lib/
-          ls -la $THEOS/include/libSandy.h $THEOS/lib/libsandy.dylib
+          curl -L -o $THEOS/include/libSandy.h \
+            https://raw.githubusercontent.com/opa334/libSandy/main/libSandy.h
+          echo "--- libSandy.h ---"
+          cat $THEOS/include/libSandy.h
+          # Build a stub .dylib exposing the same symbols so the linker is happy.
+          # The real libsandy.dylib is installed on the device as a package
+          # dependency and resolves the symbols at load time.
+          cat > /tmp/libsandy_stub.m <<'EOF'
+          #include "libSandy.h"
+          int libSandy_applyProfile(const char *profileName) { (void)profileName; return 0; }
+          EOF
+          CLANG=$THEOS/toolchain/linux/iphone/bin/clang
+          SDK=$THEOS/sdks/iPhoneOS16.5.sdk
+          for arch in arm64 arm64e; do
+            $CLANG -arch $arch -target ${arch}-apple-ios14.0 \
+              -isysroot $SDK -I$THEOS/include \
+              -shared -fPIC \
+              -install_name /var/jb/usr/lib/libsandy.dylib \
+              -o /tmp/libsandy-$arch.dylib \
+              /tmp/libsandy_stub.m
+          done
+          # Merge into a fat mach-o so -lsandy link works for both slices.
+          $THEOS/toolchain/linux/iphone/bin/lipo -create \
+            /tmp/libsandy-arm64.dylib /tmp/libsandy-arm64e.dylib \
+            -output $THEOS/lib/libsandy.dylib
+          ldid -S $THEOS/lib/libsandy.dylib || true
+          file $THEOS/lib/libsandy.dylib
 
       - name: Build rootless .deb
         env:
