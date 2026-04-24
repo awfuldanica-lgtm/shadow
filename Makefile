@@ -1,7 +1,11 @@
-ARCHS ?= armv7 armv7s arm64 arm64e
-TARGET ?= iphone:clang:14.5:8.0
+ARCHS ?= arm64 arm64e
+TARGET ?= iphone:clang:latest:14.0
 
 include $(THEOS)/makefiles/common.mk
+
+ifeq ($(THEOS_PACKAGE_SCHEME),rootless)
+ADDITIONAL_CFLAGS += -DTHEOS_PACKAGE_SCHEME_ROOTLESS=1
+endif
 SUBPROJECTS += Shadow.framework
 SUBPROJECTS += Shadow.dylib
 SUBPROJECTS += ShadowSettings.bundle

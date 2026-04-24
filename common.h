@@ -1,6 +1,12 @@
 #define BUNDLE_ID           "me.jjolano.shadow"
 #define MACH_SERVICE_NAME   BUNDLE_ID ".service"
+
+#ifdef THEOS_PACKAGE_SCHEME_ROOTLESS
+#define SHADOW_RULESETS     "/var/jb/Library/Shadow/Rulesets"
+#else
 #define SHADOW_RULESETS     "/Library/Shadow/Rulesets"
+#endif
+
 #define SHADOW_DB_PLIST     SHADOW_RULESETS "/dpkgInstalled.plist"
 #define SHADOW_PREFS_PLIST  "/var/mobile/Library/Preferences/" BUNDLE_ID ".plist"
 

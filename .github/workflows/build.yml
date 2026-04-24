@@ -1,0 +1,63 @@
+name: Build Shadow (rootless)
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential fakeroot rsync perl curl zip unzip git dpkg-dev
+
+      - name: Install ldid (Procursus)
+        run: |
+          curl -L -o /tmp/ldid https://github.com/ProcursusTeam/ldid/releases/latest/download/ldid_linux_x86_64
+          chmod +x /tmp/ldid
+          sudo mv /tmp/ldid /usr/local/bin/ldid
+          ldid 2>&1 | head -1 || true
+
+      - name: Install Theos
+        run: |
+          export THEOS=$HOME/theos
+          git clone --recursive https://github.com/theos/theos.git $THEOS
+          echo "THEOS=$THEOS" >> $GITHUB_ENV
+          echo "$THEOS/bin" >> $GITHUB_PATH
+
+      - name: Install iOS SDK 16.5 (sparse)
+        run: |
+          git clone --filter=blob:none --no-checkout --depth=1 \
+            https://github.com/theos/sdks.git /tmp/sdks
+          cd /tmp/sdks
+          git sparse-checkout init --cone
+          git sparse-checkout set iPhoneOS16.5.sdk
+          git checkout
+          mv iPhoneOS16.5.sdk $THEOS/sdks/
+          ls $THEOS/sdks/
+
+      - name: Build rootless .deb
+        env:
+          THEOS_PACKAGE_SCHEME: rootless
+          ARCHS: "arm64 arm64e"
+          TARGET: "iphone:clang:latest:14.0"
+          FINALPACKAGE: "1"
+        run: |
+          make clean || true
+          make package
+          ls -la packages/
+
+      - name: Upload deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadow-rootless-deb
+          path: packages/*.deb
+          if-no-files-found: error
