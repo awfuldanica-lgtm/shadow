@@ -6,7 +6,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -17,14 +17,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential fakeroot rsync perl curl zip unzip git dpkg-dev
+            build-essential fakeroot rsync perl curl zip unzip git dpkg-dev jq xz-utils
 
       - name: Install ldid (Procursus)
         run: |
           curl -L -o /tmp/ldid https://github.com/ProcursusTeam/ldid/releases/latest/download/ldid_linux_x86_64
           chmod +x /tmp/ldid
           sudo mv /tmp/ldid /usr/local/bin/ldid
-          ldid 2>&1 | head -1 || true
 
       - name: Install Theos
         run: |
@@ -32,6 +31,23 @@ jobs:
           git clone --recursive https://github.com/theos/theos.git $THEOS
           echo "THEOS=$THEOS" >> $GITHUB_ENV
           echo "$THEOS/bin" >> $GITHUB_PATH
+
+      - name: Install iOS cross-compile toolchain (swift-toolchain-linux)
+        run: |
+          TOOLCHAIN_URL=$(curl -sL https://api.github.com/repos/kabiroberai/swift-toolchain-linux/releases/latest \
+            | jq -r '.assets[] | select(.name | endswith("ubuntu22.04.tar.xz")) | .browser_download_url' \
+            | head -1)
+          if [ -z "$TOOLCHAIN_URL" ]; then
+            # fallback: any ubuntu tarball
+            TOOLCHAIN_URL=$(curl -sL https://api.github.com/repos/kabiroberai/swift-toolchain-linux/releases/latest \
+              | jq -r '.assets[] | select(.name | endswith(".tar.xz")) | .browser_download_url' | head -1)
+          fi
+          echo "Toolchain URL: $TOOLCHAIN_URL"
+          curl -L -o /tmp/toolchain.tar.xz "$TOOLCHAIN_URL"
+          mkdir -p $THEOS/toolchain/linux/iphone
+          tar xJf /tmp/toolchain.tar.xz -C $THEOS/toolchain/linux/iphone --strip-components=1
+          ls $THEOS/toolchain/linux/iphone/bin/ | head -10
+          $THEOS/toolchain/linux/iphone/bin/clang --version
 
       - name: Install iOS SDK 16.5 (sparse)
         run: |
