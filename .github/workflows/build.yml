@@ -66,6 +66,21 @@ jobs:
           mv iPhoneOS16.5.sdk $THEOS/sdks/
           ls $THEOS/sdks/
 
+      - name: Build & install libSandy (external dependency)
+        env:
+          THEOS: /home/runner/theos
+        run: |
+          git clone --depth=1 https://github.com/opa334/libSandy.git /tmp/libsandy
+          cd /tmp/libsandy
+          THEOS_PACKAGE_SCHEME=rootless ARCHS="arm64 arm64e" \
+            TARGET=iphone:clang:latest:14.0 make
+          mkdir -p $THEOS/include $THEOS/lib
+          cp libSandy.h $THEOS/include/
+          dylib=$(find .theos -name 'libsandy.dylib' | head -1)
+          echo "Built libsandy.dylib at: $dylib"
+          cp "$dylib" $THEOS/lib/
+          ls -la $THEOS/include/libSandy.h $THEOS/lib/libsandy.dylib
+
       - name: Build rootless .deb
         env:
           THEOS_PACKAGE_SCHEME: rootless
