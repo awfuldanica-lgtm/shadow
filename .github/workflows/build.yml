@@ -44,8 +44,17 @@ jobs:
           fi
           echo "Toolchain URL: $TOOLCHAIN_URL"
           curl -L -o /tmp/toolchain.tar.xz "$TOOLCHAIN_URL"
-          mkdir -p $THEOS/toolchain/linux/iphone
-          tar xJf /tmp/toolchain.tar.xz -C $THEOS/toolchain/linux/iphone --strip-components=1
+          mkdir -p $THEOS/toolchain/linux
+          tar xJf /tmp/toolchain.tar.xz -C $THEOS/toolchain/linux
+          echo "--- layout ---"
+          ls $THEOS/toolchain/linux
+          # Normalize: tarball may top-level be "iphone/", or "swift-X.Y-ubuntuZZ/iphone/"
+          if [ ! -d $THEOS/toolchain/linux/iphone ]; then
+            inner=$(find $THEOS/toolchain/linux -maxdepth 2 -type d -name iphone | head -1)
+            if [ -n "$inner" ]; then
+              mv "$inner" $THEOS/toolchain/linux/iphone
+            fi
+          fi
           ls $THEOS/toolchain/linux/iphone/bin/ | head -10
           $THEOS/toolchain/linux/iphone/bin/clang --version
 
