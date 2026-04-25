@@ -71,6 +71,16 @@
         // Disable hook categories that need code-patch hooks or are
         // ObjC-internal-runtime invasive; SMBC's detection is mostly
         // file-existence and dyld walking which the kept categories cover.
+        // Re-enabled categories that hook only exported symbols (fishhook-safe):
+        //  - AntiDebugging: ptrace, sysctl, getppid (SMBC's "security level"
+        //    popup is driven by sysctl(KERN_PROC) and/or getppid)
+        //  - Syscall: csops, raw syscall(SYS_ptrace) for PT_DENY_ATTACH
+        //  - LowLevelC: open/openat/__opendir2 (alt path-existence checks)
+        //  - Sandbox: sandbox_check, fcntl, fork, exec*, *_special_port
+        //  - MachBootstrap: bootstrap_check_in / bootstrap_look_up
+        //  - Memory: vm_region_64, vm_region_recurse_64
+        // Still off: Foundation/ObjCRuntime/TweakClasses (ObjC swizzling
+        // path is more fragile under fishhook fallback) and FakeMac (irrelevant).
         prefs_load = @{
             @"App_Enabled" : @YES,
             @"HK_Library" : @"fishhook",
@@ -82,16 +92,16 @@
             @"Hook_SymLookup" : @YES,
             @"Hook_DynamicLibrariesExtra" : @YES,
             @"Hook_HideApps" : @YES,
+            @"Hook_AntiDebugging" : @YES,
+            @"Hook_Syscall" : @YES,
+            @"Hook_LowLevelC" : @YES,
+            @"Hook_Sandbox" : @YES,
+            @"Hook_MachBootstrap" : @YES,
+            @"Hook_Memory" : @YES,
             @"Hook_Foundation" : @NO,
-            @"Hook_MachBootstrap" : @NO,
-            @"Hook_LowLevelC" : @NO,
-            @"Hook_AntiDebugging" : @NO,
             @"Hook_ObjCRuntime" : @NO,
-            @"Hook_FakeMac" : @NO,
-            @"Hook_Syscall" : @NO,
-            @"Hook_Sandbox" : @NO,
-            @"Hook_Memory" : @NO,
             @"Hook_TweakClasses" : @NO,
+            @"Hook_FakeMac" : @NO,
         };
     }
 
