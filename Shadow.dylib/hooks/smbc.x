@@ -25,12 +25,22 @@ static NSArray<NSString *>* shadowhook_smbc_needles(void) {
     static dispatch_once_t t = 0;
     dispatch_once(&t, ^{
         a = @[
+            // Japanese (SMBC)
             @"セキュリティ", @"脱獄", @"改竄", @"改ざん",
-            @"jailbreak", @"Jailbreak",
             @"システムエラー",
             @"本アプリを終了",
             @"終了させていただ",
             @"本アプリはご利用",
+            // Korean (UI Bank — uses Korean even on Japanese app)
+            @"탈옥",          // jailbreak
+            @"루팅",          // rooting
+            @"비정상 단말",    // abnormal device
+            @"비정상",         // abnormal (substring)
+            @"지원하지 않",    // not supported
+            // Generic English
+            @"jailbreak", @"Jailbreak",
+            @"Security Alert",
+            @"Rooted",
         ];
     });
     return a;

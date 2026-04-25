@@ -61,9 +61,11 @@
     // rootless/ellekit), fall back to a hardcoded all-hooks-on profile so the
     // tweak still does its job. Scoped by bundle id as a safety net even
     // though Shadow.plist already limits injection to this app.
-    if((!prefs_load || ![prefs_load[@"App_Enabled"] boolValue])
-       && [bundleIdentifier isEqualToString:@"jp.co.smbc.direct"]) {
-        NSLog(@"[Shadow] no per-app config; activating SMBC default profile");
+    BOOL isTargetBank =
+        [bundleIdentifier isEqualToString:@"jp.co.smbc.direct"] ||
+        [bundleIdentifier isEqualToString:@"com.dnx.japan.ui.bank"];
+    if((!prefs_load || ![prefs_load[@"App_Enabled"] boolValue]) && isTargetBank) {
+        NSLog(@"[Shadow] no per-app config; activating bank default profile");
         // ellekit's MSHookFunction trampoline traps (brk #1) on some libc
         // functions on arm64e/roothide (issue #146). Force fishhook, which
         // does symbol-table rebinding rather than code patching — works on
@@ -312,10 +314,10 @@
         shadowhook_dyld_extra(substitutor);
     }
 
-    // SMBC: install alert-suppress + terminator-block hooks unconditionally
-    // (Shadow.plist already restricts injection to jp.co.smbc.direct, so this
-    // dylib only ever loads inside SMBC.)
-    if ([bundleIdentifier isEqualToString:@"jp.co.smbc.direct"]) {
+    // Bank bypass: install alert-suppress + terminator-block hooks for any
+    // target banking app. Shadow.plist already restricts injection to the
+    // bundle ids we care about, but check again as defence in depth.
+    if (isTargetBank) {
         shadowhook_smbc_alerts();
         shadowhook_smbc_terminators(substitutor);
     }
