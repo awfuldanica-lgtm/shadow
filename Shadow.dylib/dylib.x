@@ -38,9 +38,12 @@
     // Determine the application we're injected into.
     NSString* bundleIdentifier = [Shadow getBundleIdentifier];
 
-    // Injected into SpringBoard.
+    // Injected into SpringBoard — DISABLED.
+    // The SpringBoard hook generates a dpkg-derived ruleset DB on respring,
+    // but on rootless/ellekit the hook trampoline crashed SpringBoard, breaking
+    // boot. The DB can be regenerated manually via the `shdw` CLI. Even if the
+    // narrowed Shadow.plist filter ever lets us land in SpringBoard, do nothing.
     if([bundleIdentifier isEqualToString:@"com.apple.springboard"]) {
-        %init(hook_springboard);
         return;
     }
 
