@@ -82,3 +82,7 @@ extern void shadowhook_mem(HKSubstitutor* hooks);
 extern void shadowhook_objc_hidetweakclasses(HKSubstitutor* hooks);
 extern void shadowhook_LSApplicationWorkspace(HKSubstitutor* hooks);
 extern void shadowhook_NSThread(HKSubstitutor* hooks);
+
+// SMBC bypass (translated from frida bypass12.js)
+extern void shadowhook_smbc_alerts(void);
+extern void shadowhook_smbc_terminators(HKSubstitutor* hooks);

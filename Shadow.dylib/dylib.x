@@ -312,6 +312,14 @@
         shadowhook_dyld_extra(substitutor);
     }
 
+    // SMBC: install alert-suppress + terminator-block hooks unconditionally
+    // (Shadow.plist already restricts injection to jp.co.smbc.direct, so this
+    // dylib only ever loads inside SMBC.)
+    if ([bundleIdentifier isEqualToString:@"jp.co.smbc.direct"]) {
+        shadowhook_smbc_alerts();
+        shadowhook_smbc_terminators(substitutor);
+    }
+
     #ifdef hookkit_h
     HKExecuteBatch();
     HKDisableBatching();
