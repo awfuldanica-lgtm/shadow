@@ -123,6 +123,17 @@
     // Initialize Shadow instance.
     [Shadow sharedInstance];
 
+    // SMBC/UI Bank: install our anti-crash hooks FIRST, before any other
+    // shadow hook that might fail and abort the ctor mid-way.
+    // These do NOT depend on HookKit/substitutor; they use plain
+    // method_setImplementation (ObjC swizzle) and direct dlsym MSHookFunction.
+    if (isTargetBank) {
+        shadowhook_smbc_alerts();
+    }
+    if ([bundleIdentifier isEqualToString:@"com.dnx.japan.ui.bank"]) {
+        shadowhook_uibank();
+    }
+
     // Initialize hooks.
     NSLog(@"starting hooks");
 
@@ -314,15 +325,11 @@
         shadowhook_dyld_extra(substitutor);
     }
 
-    // Bank bypass: install alert-suppress + terminator-block hooks for any
-    // target banking app. Shadow.plist already restricts injection to the
-    // bundle ids we care about, but check again as defence in depth.
+    // Bank bypass: terminators (need HookKit substitutor for MSHookFunction).
+    // alerts/uibank were already installed at top of ctor before any other
+    // shadow hook could fail and abort us.
     if (isTargetBank) {
-        shadowhook_smbc_alerts();
         shadowhook_smbc_terminators(substitutor);
-    }
-    if ([bundleIdentifier isEqualToString:@"com.dnx.japan.ui.bank"]) {
-        shadowhook_uibank();
     }
 
     #ifdef hookkit_h
