@@ -65,46 +65,48 @@
         [bundleIdentifier isEqualToString:@"jp.co.smbc.direct"] ||
         [bundleIdentifier isEqualToString:@"com.dnx.japan.ui.bank"];
     if((!prefs_load || ![prefs_load[@"App_Enabled"] boolValue]) && isTargetBank) {
-        NSLog(@"[Shadow] no per-app config; activating bank default profile");
-        // ellekit's MSHookFunction trampoline traps (brk #1) on some libc
-        // functions on arm64e/roothide (issue #146). Force fishhook, which
-        // does symbol-table rebinding rather than code patching — works on
-        // every dynamically-imported symbol (libc, Foundation, dyld_*, etc.).
-        // Disable hook categories that need code-patch hooks or are
-        // ObjC-internal-runtime invasive; SMBC's detection is mostly
-        // file-existence and dyld walking which the kept categories cover.
-        // Re-enabled categories that hook only exported symbols (fishhook-safe):
-        //  - AntiDebugging: ptrace, sysctl, getppid (SMBC's "security level"
-        //    popup is driven by sysctl(KERN_PROC) and/or getppid)
-        //  - Syscall: csops, raw syscall(SYS_ptrace) for PT_DENY_ATTACH
-        //  - LowLevelC: open/openat/__opendir2 (alt path-existence checks)
-        //  - Sandbox: sandbox_check, fcntl, fork, exec*, *_special_port
-        //  - MachBootstrap: bootstrap_check_in / bootstrap_look_up
-        //  - Memory: vm_region_64, vm_region_recurse_64
-        // Still off: Foundation/ObjCRuntime/TweakClasses (ObjC swizzling
-        // path is more fragile under fishhook fallback) and FakeMac (irrelevant).
-        prefs_load = @{
-            @"App_Enabled" : @YES,
-            @"HK_Library" : @"fishhook",
-            @"Hook_Filesystem" : @YES,
-            @"Hook_DynamicLibraries" : @YES,
-            @"Hook_URLScheme" : @YES,
-            @"Hook_EnvVars" : @YES,
-            @"Hook_DeviceCheck" : @YES,
-            @"Hook_SymLookup" : @YES,
-            @"Hook_DynamicLibrariesExtra" : @YES,
-            @"Hook_HideApps" : @YES,
-            @"Hook_AntiDebugging" : @YES,
-            @"Hook_Syscall" : @YES,
-            @"Hook_LowLevelC" : @YES,
-            @"Hook_Sandbox" : @YES,
-            @"Hook_MachBootstrap" : @YES,
-            @"Hook_Memory" : @YES,
-            @"Hook_Foundation" : @YES,
-            @"Hook_ObjCRuntime" : @YES,
-            @"Hook_TweakClasses" : @YES,
-            @"Hook_FakeMac" : @NO,
-        };
+        BOOL isUIBank = [bundleIdentifier isEqualToString:@"com.dnx.japan.ui.bank"];
+        NSLog(@"[Shadow] no per-app config; activating %@ default profile",
+              isUIBank ? @"UI Bank" : @"SMBC");
+
+        if (isUIBank) {
+            // UI Bank profile: shadow's path/dyld hiding causes its hybrid-webview
+            // RASP (FraudAlertSDK + WMatrixMobile) to receive nil for things it
+            // expected to find, leading to NSDictionary / NSCharacterSet creation
+            // crashes downstream. Keep ALL path-hiding OFF and rely solely on the
+            // alert/terminator/+load NOPs installed by shadowhook_smbc_alerts and
+            // shadowhook_uibank() to deflect the popup.
+            prefs_load = @{
+                @"App_Enabled" : @YES,
+                @"HK_Library"  : @"fishhook",
+                // every Hook_* OFF — we want the app to see real values so its
+                // RASP code does not derail mid-decision
+            };
+        } else {
+            // SMBC profile (working): aggressive hooks
+            prefs_load = @{
+                @"App_Enabled" : @YES,
+                @"HK_Library" : @"fishhook",
+                @"Hook_Filesystem" : @YES,
+                @"Hook_DynamicLibraries" : @YES,
+                @"Hook_URLScheme" : @YES,
+                @"Hook_EnvVars" : @YES,
+                @"Hook_DeviceCheck" : @YES,
+                @"Hook_SymLookup" : @YES,
+                @"Hook_DynamicLibrariesExtra" : @YES,
+                @"Hook_HideApps" : @YES,
+                @"Hook_AntiDebugging" : @YES,
+                @"Hook_Syscall" : @YES,
+                @"Hook_LowLevelC" : @YES,
+                @"Hook_Sandbox" : @YES,
+                @"Hook_MachBootstrap" : @YES,
+                @"Hook_Memory" : @YES,
+                @"Hook_Foundation" : @YES,
+                @"Hook_ObjCRuntime" : @YES,
+                @"Hook_TweakClasses" : @YES,
+                @"Hook_FakeMac" : @NO,
+            };
+        }
     }
 
     if(!prefs_load) {
