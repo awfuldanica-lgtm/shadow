@@ -8,6 +8,7 @@ ADDITIONAL_CFLAGS += -DTHEOS_PACKAGE_SCHEME_ROOTLESS=1
 endif
 SUBPROJECTS += Shadow.framework
 SUBPROJECTS += Shadow.dylib
-SUBPROJECTS += ShadowSettings.bundle
+# ShadowSettings.bundle dropped — SMBC bypass is hardcoded in
+# Shadow.dylib/hooks/smbc.x, no per-app config UI required.
 SUBPROJECTS += shdw
 include $(THEOS_MAKE_PATH)/aggregate.mk

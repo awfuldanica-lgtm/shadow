@@ -98,24 +98,6 @@ jobs:
           ldid -S $THEOS/lib/libsandy.dylib || true
           file $THEOS/lib/libsandy.dylib
 
-      - name: Build AltList framework (ShadowSettings dependency)
-        env:
-          THEOS: /home/runner/theos
-        run: |
-          git clone --depth=1 --recursive https://github.com/opa334/AltList.git /tmp/altlist
-          cd /tmp/altlist
-          THEOS_PACKAGE_SCHEME=rootless ARCHS="arm64 arm64e" \
-            TARGET=iphone:clang:latest:14.0 FINALPACKAGE=1 make || \
-          THEOS_PACKAGE_SCHEME=rootless ARCHS="arm64 arm64e" \
-            TARGET=iphone:clang:latest:14.0 make
-          fw=$(find .theos -type d -name 'AltList.framework' 2>/dev/null | head -1)
-          echo "AltList framework at: $fw"
-          if [ -z "$fw" ]; then
-            echo "::error::AltList build did not produce a framework"; exit 1
-          fi
-          cp -r "$fw" "$GITHUB_WORKSPACE/vendor/"
-          ls -la "$GITHUB_WORKSPACE/vendor/AltList.framework/"
-
       - name: Build dependency .debs (Modulous / RootBridge / HookKit / ellekit module)
         env:
           THEOS_PACKAGE_SCHEME: rootless
