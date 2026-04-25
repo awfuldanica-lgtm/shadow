@@ -157,6 +157,19 @@ static void shadowhook_smbc_block_cxa_throw(void* a, void* b, void (*c)(void*)) 
     NSLog(@"[Shadow/SMBC] blocked __cxa_throw");
 }
 
+// +[NSException raise:format:] — variadic, matched by ObjC selector
+typedef void (*shadowhook_smbc_nsexc_raise_imp_t)(
+    Class self, SEL _cmd, NSString* name, NSString* format, ...);
+static shadowhook_smbc_nsexc_raise_imp_t shadowhook_smbc_orig_nsexception_raise = NULL;
+
+static void shadowhook_smbc_nsexception_raise_replacement(
+    Class self, SEL _cmd, NSString* name, NSString* format, ...) {
+    NSLog(@"[Shadow/SMBC] swallowed NSException raise: name=%@ format=%@", name, format);
+    // Don't call original — exception is silenced. Caller's __noreturn assumption
+    // is violated but we return cleanly; if calling code does anything sane after
+    // a raise: (which it shouldn't, but compilers vary) it just continues.
+}
+
 void shadowhook_smbc_terminators(HKSubstitutor* hooks) {
     MSHookFunction((void*)exit,         (void*)shadowhook_smbc_block_exit,
                    (void**)&shadowhook_smbc_orig_exit);
@@ -175,6 +188,23 @@ void shadowhook_smbc_terminators(HKSubstitutor* hooks) {
         MSHookFunction(cxa_throw_addr,  (void*)shadowhook_smbc_block_cxa_throw,
                        (void**)&shadowhook_smbc_orig_cxa_throw);
     }
+
+    // ObjC-level: hook +[NSException raise:format:] so JB-related raises just
+    // log and return instead of throwing. Stops the exception chain at the
+    // source rather than trying to catch it after the fact (where _objc_terminate
+    // would __builtin_trap us).
+    {
+        Class cls = [NSException class];
+        SEL sel = @selector(raise:format:);
+        Method m = class_getClassMethod(cls, sel);
+        if (m) {
+            shadowhook_smbc_orig_nsexception_raise =
+                (shadowhook_smbc_nsexc_raise_imp_t)method_getImplementation(m);
+            method_setImplementation(m, (IMP)shadowhook_smbc_nsexception_raise_replacement);
+            NSLog(@"[Shadow/SMBC] hooked +[NSException raise:format:]");
+        }
+    }
+
     NSLog(@"[Shadow/SMBC] terminator chain blocked");
 }
 
