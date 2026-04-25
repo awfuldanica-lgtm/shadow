@@ -98,9 +98,9 @@
             @"Hook_Sandbox" : @YES,
             @"Hook_MachBootstrap" : @YES,
             @"Hook_Memory" : @YES,
-            @"Hook_Foundation" : @NO,
-            @"Hook_ObjCRuntime" : @NO,
-            @"Hook_TweakClasses" : @NO,
+            @"Hook_Foundation" : @YES,
+            @"Hook_ObjCRuntime" : @YES,
+            @"Hook_TweakClasses" : @YES,
             @"Hook_FakeMac" : @NO,
         };
     }
