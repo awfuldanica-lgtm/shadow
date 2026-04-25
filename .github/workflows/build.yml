@@ -116,6 +116,34 @@ jobs:
           cp -r "$fw" "$GITHUB_WORKSPACE/vendor/"
           ls -la "$GITHUB_WORKSPACE/vendor/AltList.framework/"
 
+      - name: Build dependency .debs (Modulous / RootBridge / HookKit / ellekit module)
+        env:
+          THEOS_PACKAGE_SCHEME: rootless
+          ARCHS: "arm64 arm64e"
+          TARGET: "iphone:clang:latest:14.0"
+          FINALPACKAGE: "1"
+        run: |
+          set -e
+          OUT=$GITHUB_WORKSPACE/output_packages
+          mkdir -p $OUT
+
+          # 1. Modulous (no external deps)
+          (cd vendor/Modulous.framework && make clean && make package && cp packages/*.deb $OUT/)
+
+          # 2. RootBridge (no external deps)
+          (cd vendor/RootBridge.framework && make clean && make package && cp packages/*.deb $OUT/)
+
+          # 3. HookKit framework (its vendor/ already has Modulous + RootBridge submodules)
+          (cd vendor/HookKit.framework && make clean && make package && cp packages/*.deb $OUT/)
+
+          # 4. HookKit ellekit module (provides me.jjolano.hkmodule.substrate virtual pkg)
+          # Its vendor/ already has libhooker headers, lib_ellekit.tbd, and a
+          # bundled HookKit.framework, so it builds standalone.
+          (cd vendor/HookKit.framework/Modules/libellekit.bundle && \
+            make clean && make package && cp packages/*.deb $OUT/)
+
+          ls -la $OUT/
+
       - name: Build rootless .deb
         env:
           THEOS_PACKAGE_SCHEME: rootless
@@ -129,11 +157,13 @@ jobs:
           cp $THEOS/lib/libsandy.dylib $THEOS/lib/iphone/rootless/ || true
           make clean || true
           make package
-          ls -la packages/
+          # Bundle shadow deb together with deps for one-shot install.
+          cp packages/*.deb $GITHUB_WORKSPACE/output_packages/
+          ls -la $GITHUB_WORKSPACE/output_packages/
 
       - name: Upload deb artifact
         uses: actions/upload-artifact@v4
         with:
           name: shadow-rootless-deb
-          path: packages/*.deb
+          path: output_packages/*.deb
           if-no-files-found: error
