@@ -125,6 +125,14 @@
             if([path hasPrefix:@"/var/jb"] || [path hasPrefix:@"/cores/"]) {
                 return YES;
             }
+
+            // roothide: jailbreak filesystem lives at
+            // /var/containers/Bundle/Application/.jbroot-<hash>/...
+            // (also /private/var/... before getStandardizedPath strips /private)
+            // Treat anything below such a directory as restricted.
+            if([path containsString:@"/.jbroot-"]) {
+                return YES;
+            }
         }
 
         if([path hasPrefix:@"/usr/lib"]) {
