@@ -57,6 +57,37 @@
 
     NSDictionary* prefs_load = [[ShadowSettings sharedInstance] getPreferencesForIdentifier:bundleIdentifier];
 
+    // SMBC bypass: if user prefs aren't configured (Settings UI broken on
+    // rootless/ellekit), fall back to a hardcoded all-hooks-on profile so the
+    // tweak still does its job. Scoped by bundle id as a safety net even
+    // though Shadow.plist already limits injection to this app.
+    if((!prefs_load || ![prefs_load[@"App_Enabled"] boolValue])
+       && [bundleIdentifier isEqualToString:@"jp.co.smbc.direct"]) {
+        NSLog(@"[Shadow] no per-app config; activating SMBC default profile");
+        prefs_load = @{
+            @"App_Enabled" : @YES,
+            @"HK_Library" : @"auto",
+            @"Hook_Filesystem" : @YES,
+            @"Hook_DynamicLibraries" : @YES,
+            @"Hook_URLScheme" : @YES,
+            @"Hook_EnvVars" : @YES,
+            @"Hook_Foundation" : @YES,
+            @"Hook_DeviceCheck" : @YES,
+            @"Hook_MachBootstrap" : @YES,
+            @"Hook_SymLookup" : @YES,
+            @"Hook_LowLevelC" : @YES,
+            @"Hook_AntiDebugging" : @YES,
+            @"Hook_DynamicLibrariesExtra" : @YES,
+            @"Hook_ObjCRuntime" : @YES,
+            @"Hook_FakeMac" : @NO,
+            @"Hook_Syscall" : @YES,
+            @"Hook_Sandbox" : @YES,
+            @"Hook_Memory" : @YES,
+            @"Hook_TweakClasses" : @YES,
+            @"Hook_HideApps" : @YES,
+        };
+    }
+
     if(!prefs_load) {
         NSLog(@"[Shadow] warning: preferences not loaded");
         return;
