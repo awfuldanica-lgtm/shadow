@@ -140,7 +140,8 @@ static int shadowhook_smbc_block_pthread_kill(pthread_t t, int sig) {
     return 0;
 }
 
-extern void __cxa_throw(void* thrown_exception, void* tinfo, void (*dest)(void*));
+// __cxa_throw lives in libc++abi which shadow.dylib does not link against.
+// Resolve at runtime via dlsym so we don't drag a hard link dependency.
 static void (*shadowhook_smbc_orig_cxa_throw)(void*, void*, void (*)(void*)) = NULL;
 static void shadowhook_smbc_block_cxa_throw(void* a, void* b, void (*c)(void*)) {
     NSLog(@"[Shadow/SMBC] blocked __cxa_throw");
@@ -159,7 +160,10 @@ void shadowhook_smbc_terminators(HKSubstitutor* hooks) {
                    (void**)&shadowhook_smbc_orig_kill);
     MSHookFunction((void*)pthread_kill, (void*)shadowhook_smbc_block_pthread_kill,
                    (void**)&shadowhook_smbc_orig_pthread_kill);
-    MSHookFunction((void*)__cxa_throw,  (void*)shadowhook_smbc_block_cxa_throw,
-                   (void**)&shadowhook_smbc_orig_cxa_throw);
+    void* cxa_throw_addr = dlsym(RTLD_DEFAULT, "__cxa_throw");
+    if (cxa_throw_addr) {
+        MSHookFunction(cxa_throw_addr,  (void*)shadowhook_smbc_block_cxa_throw,
+                       (void**)&shadowhook_smbc_orig_cxa_throw);
+    }
     NSLog(@"[Shadow/SMBC] terminator chain blocked");
 }
