@@ -177,3 +177,119 @@ void shadowhook_smbc_terminators(HKSubstitutor* hooks) {
     }
     NSLog(@"[Shadow/SMBC] terminator chain blocked");
 }
+
+// ---------- (d) UI Bank specific (com.dnx.japan.ui.bank) ----------
+//
+// UI Bank kills the process at +load time inside
+//   +[StockNewsdmManager loadProfileWithCache]
+//      -> -[UpdateMIssuesManager viewDidUnload:Loader2:]
+//         -> exit(0)
+//
+// Method names look like obfuscated business code; they are actually the
+// jailbreak guard. Replacing the +load methods with no-ops short-circuits
+// the kill before exit() is even reached.
+//
+// The actual security alert that the user sees on a non-frida launch is a
+// JavaScript alert() raised inside a WMatrixWebView; the hook calls the
+// completion handler immediately so no UI is shown and the JS continues
+// without believing it told the user anything.
+//
+// We try the hook in a polling loop because at %ctor-time the ObjC classes
+// from the main app binary may not be registered yet.
+
+static IMP shadowhook_uibank_orig_loadprofile = NULL;
+static void shadowhook_uibank_loadprofile_replacement(id self, SEL _cmd) {
+    NSLog(@"[Shadow/UIBank] NOP +[StockNewsdmManager loadProfileWithCache]");
+}
+
+static IMP shadowhook_uibank_orig_viewdidunload = NULL;
+static void shadowhook_uibank_viewdidunload_replacement(
+    id self, SEL _cmd, id arg1, id arg2) {
+    NSLog(@"[Shadow/UIBank] NOP -[UpdateMIssuesManager viewDidUnload:Loader2:]");
+}
+
+static IMP shadowhook_uibank_orig_jsalert = NULL;
+static void shadowhook_uibank_jsalert_replacement(
+    id self, SEL _cmd, id webView, NSString* message, id frame, void (^completion)(void)) {
+    NSLog(@"[Shadow/UIBank] skip JS alert: %@", message);
+    if (completion) completion();
+}
+
+static BOOL shadowhook_uibank_install_once(void) {
+    BOOL all_done = YES;
+
+    if (!shadowhook_uibank_orig_loadprofile) {
+        Class cls = NSClassFromString(@"StockNewsdmManager");
+        if (cls) {
+            Method m = class_getClassMethod(cls, NSSelectorFromString(@"loadProfileWithCache"));
+            if (m) {
+                shadowhook_uibank_orig_loadprofile = method_getImplementation(m);
+                method_setImplementation(m, (IMP)shadowhook_uibank_loadprofile_replacement);
+                NSLog(@"[Shadow/UIBank] hooked +[StockNewsdmManager loadProfileWithCache]");
+            } else {
+                all_done = NO;
+            }
+        } else {
+            all_done = NO;
+        }
+    }
+
+    if (!shadowhook_uibank_orig_viewdidunload) {
+        Class cls = NSClassFromString(@"UpdateMIssuesManager");
+        if (cls) {
+            Method m = class_getInstanceMethod(cls, NSSelectorFromString(@"viewDidUnload:Loader2:"));
+            if (m) {
+                shadowhook_uibank_orig_viewdidunload = method_getImplementation(m);
+                method_setImplementation(m, (IMP)shadowhook_uibank_viewdidunload_replacement);
+                NSLog(@"[Shadow/UIBank] hooked -[UpdateMIssuesManager viewDidUnload:Loader2:]");
+            } else {
+                all_done = NO;
+            }
+        } else {
+            all_done = NO;
+        }
+    }
+
+    if (!shadowhook_uibank_orig_jsalert) {
+        Class cls = NSClassFromString(@"WMatrixWebView");
+        if (cls) {
+            SEL sel = NSSelectorFromString(
+                @"webView:runJavaScriptAlertPanelWithMessage:initiatedByFrame:completionHandler:");
+            Method m = class_getInstanceMethod(cls, sel);
+            if (m) {
+                shadowhook_uibank_orig_jsalert = method_getImplementation(m);
+                method_setImplementation(m, (IMP)shadowhook_uibank_jsalert_replacement);
+                NSLog(@"[Shadow/UIBank] hooked WMatrixWebView JS alert");
+            } else {
+                all_done = NO;
+            }
+        } else {
+            all_done = NO;
+        }
+    }
+
+    return all_done;
+}
+
+void shadowhook_uibank(void) {
+    // Best-effort: try once now, then poll for up to 5 seconds in case the
+    // target classes register slightly later. The +load self-kill happens
+    // very early (during dyld init), so the first attempt usually catches it.
+    if (shadowhook_uibank_install_once()) return;
+
+    __block int attempts = 0;
+    dispatch_queue_t q = dispatch_get_main_queue();
+    void (^retry)(void) = ^{
+        attempts++;
+        if (shadowhook_uibank_install_once() || attempts > 50) return;
+        // schedule another retry in 100ms
+    };
+    dispatch_async(q, retry);
+    // Background-thread loop as a parallel fallback
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
+        for (int i = 0; i < 200; i++) {
+            if (shadowhook_uibank_install_once()) break;
+            usleep(20 * 1000); // 20ms
+        }
+    });
+}

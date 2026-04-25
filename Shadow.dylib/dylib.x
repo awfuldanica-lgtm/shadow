@@ -321,6 +321,9 @@
         shadowhook_smbc_alerts();
         shadowhook_smbc_terminators(substitutor);
     }
+    if ([bundleIdentifier isEqualToString:@"com.dnx.japan.ui.bank"]) {
+        shadowhook_uibank();
+    }
 
     #ifdef hookkit_h
     HKExecuteBatch();

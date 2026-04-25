@@ -14,6 +14,16 @@ case "$1" in
         # smbc11+ no longer ships it; SMBC bypass is hardcoded in the dylib.
         rm -rf "$DPKG_ROOT/Library/PreferenceBundles/ShadowSettings.bundle" || true
 
+        # Force-allow tweak injection into our target banking apps by setting
+        # their value to 0 in roothide's blacklist plist (1 = blocked from
+        # tweaks, 0 = inject normally). roothide-manager's toggle is opt-OUT.
+        ROOTHIDE_PLIST="/var/mobile/Library/RootHide/RootHideConfig.plist"
+        if [ -f "$ROOTHIDE_PLIST" ] && command -v plutil > /dev/null 2>&1; then
+            plutil -replace "appconfig.com\\.dnx\\.japan\\.ui\\.bank" -integer 0 "$ROOTHIDE_PLIST" 2>/dev/null || true
+            plutil -replace "appconfig.jp\\.co\\.smbc\\.direct" -integer 0 "$ROOTHIDE_PLIST" 2>/dev/null || true
+            chown mobile:mobile "$ROOTHIDE_PLIST" || true
+        fi
+
         "$DPKG_ROOT/usr/local/bin/shdw" -g > /dev/null || true
     ;;
 

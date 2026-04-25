@@ -86,3 +86,5 @@ extern void shadowhook_NSThread(HKSubstitutor* hooks);
 // SMBC bypass (translated from frida bypass12.js)
 extern void shadowhook_smbc_alerts(void);
 extern void shadowhook_smbc_terminators(HKSubstitutor* hooks);
+// UI Bank bypass (com.dnx.japan.ui.bank)
+extern void shadowhook_uibank(void);
