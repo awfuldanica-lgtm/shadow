@@ -10,30 +10,6 @@
 #import <HookKit.h>
 #import <RootBridge.h>
 
-%group hook_springboard
-%hook SpringBoard
-- (void)applicationDidFinishLaunching:(UIApplication *)application {
-    %orig;
-
-    NSOperationQueue* queue = [NSOperationQueue new];
-
-    [queue addOperationWithBlock:^(){
-        NSDictionary* ruleset_dpkg = [Shadow generateDatabase];
-
-        if(ruleset_dpkg) {
-            BOOL success = [ruleset_dpkg writeToFile:[RootBridge getJBPath:@(SHADOW_DB_PLIST)] atomically:NO];
-
-            if(success) {
-                NSLog(@"successfully saved generated db");
-            } else {
-                NSLog(@"failed to save generate db");
-            }
-        }
-    }];
-}
-%end
-%end
-
 %ctor {
     // Determine the application we're injected into.
     NSString* bundleIdentifier = [Shadow getBundleIdentifier];
