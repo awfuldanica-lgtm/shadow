@@ -64,27 +64,34 @@
     if((!prefs_load || ![prefs_load[@"App_Enabled"] boolValue])
        && [bundleIdentifier isEqualToString:@"jp.co.smbc.direct"]) {
         NSLog(@"[Shadow] no per-app config; activating SMBC default profile");
+        // ellekit's MSHookFunction trampoline traps (brk #1) on some libc
+        // functions on arm64e/roothide (issue #146). Force fishhook, which
+        // does symbol-table rebinding rather than code patching — works on
+        // every dynamically-imported symbol (libc, Foundation, dyld_*, etc.).
+        // Disable hook categories that need code-patch hooks or are
+        // ObjC-internal-runtime invasive; SMBC's detection is mostly
+        // file-existence and dyld walking which the kept categories cover.
         prefs_load = @{
             @"App_Enabled" : @YES,
-            @"HK_Library" : @"auto",
+            @"HK_Library" : @"fishhook",
             @"Hook_Filesystem" : @YES,
             @"Hook_DynamicLibraries" : @YES,
             @"Hook_URLScheme" : @YES,
             @"Hook_EnvVars" : @YES,
-            @"Hook_Foundation" : @YES,
             @"Hook_DeviceCheck" : @YES,
-            @"Hook_MachBootstrap" : @YES,
             @"Hook_SymLookup" : @YES,
-            @"Hook_LowLevelC" : @YES,
-            @"Hook_AntiDebugging" : @YES,
             @"Hook_DynamicLibrariesExtra" : @YES,
-            @"Hook_ObjCRuntime" : @YES,
-            @"Hook_FakeMac" : @NO,
-            @"Hook_Syscall" : @YES,
-            @"Hook_Sandbox" : @YES,
-            @"Hook_Memory" : @YES,
-            @"Hook_TweakClasses" : @YES,
             @"Hook_HideApps" : @YES,
+            @"Hook_Foundation" : @NO,
+            @"Hook_MachBootstrap" : @NO,
+            @"Hook_LowLevelC" : @NO,
+            @"Hook_AntiDebugging" : @NO,
+            @"Hook_ObjCRuntime" : @NO,
+            @"Hook_FakeMac" : @NO,
+            @"Hook_Syscall" : @NO,
+            @"Hook_Sandbox" : @NO,
+            @"Hook_Memory" : @NO,
+            @"Hook_TweakClasses" : @NO,
         };
     }
 
