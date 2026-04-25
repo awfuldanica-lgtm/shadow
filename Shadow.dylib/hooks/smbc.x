@@ -301,7 +301,71 @@ static BOOL shadowhook_uibank_install_once(void) {
     return all_done;
 }
 
+// (e) Defensive nil-handlers for UI Bank's RASP zombie-code chain
+//
+// After alert/exit hooks deflect the JB-detection self-kill, RASP code
+// continues running with stale state, hits NSCharacterSet/NSDictionary
+// creators with nil args, and segfaults inside CoreFoundation. Wrap them.
+
+typedef id (*shadowhook_uibank_charset_imp_t)(Class self, SEL _cmd, NSString* str);
+static shadowhook_uibank_charset_imp_t shadowhook_uibank_orig_charset = NULL;
+static id shadowhook_uibank_charset_replacement(
+    Class self, SEL _cmd, NSString* str) {
+    if (str == nil) {
+        NSLog(@"[Shadow/UIBank] charsetWithChars: nil -> empty");
+        return [[NSCharacterSet alloc] init];
+    }
+    return shadowhook_uibank_orig_charset(self, _cmd, str);
+}
+
+typedef NSDictionary* (*shadowhook_uibank_dict_imp_t)(
+    Class self, SEL _cmd, const id _Nonnull * objects, const id _Nonnull * keys, NSUInteger cnt);
+static shadowhook_uibank_dict_imp_t shadowhook_uibank_orig_dict = NULL;
+static NSDictionary* shadowhook_uibank_dict_replacement(
+    Class self, SEL _cmd, const id _Nonnull * objects, const id _Nonnull * keys, NSUInteger cnt) {
+    BOOL hasNil = NO;
+    if (cnt > 0) {
+        if (objects == NULL || keys == NULL) hasNil = YES;
+        else for (NSUInteger i = 0; i < cnt && !hasNil; i++)
+            if (objects[i] == nil || keys[i] == nil) hasNil = YES;
+    }
+    if (hasNil) {
+        NSLog(@"[Shadow/UIBank] dictWithObjs nil-entries cnt=%lu -> empty",
+              (unsigned long)cnt);
+        return @{};
+    }
+    return shadowhook_uibank_orig_dict(self, _cmd, objects, keys, cnt);
+}
+
+static void shadowhook_uibank_install_safe_creators(void) {
+    {
+        Class cls = [NSCharacterSet class];
+        SEL sel = @selector(characterSetWithCharactersInString:);
+        Method m = class_getClassMethod(cls, sel);
+        if (m && !shadowhook_uibank_orig_charset) {
+            shadowhook_uibank_orig_charset =
+                (shadowhook_uibank_charset_imp_t)method_getImplementation(m);
+            method_setImplementation(m, (IMP)shadowhook_uibank_charset_replacement);
+            NSLog(@"[Shadow/UIBank] hooked +[NSCharacterSet characterSetWithCharactersInString:]");
+        }
+    }
+    {
+        Class cls = [NSDictionary class];
+        SEL sel = @selector(dictionaryWithObjects:forKeys:count:);
+        Method m = class_getClassMethod(cls, sel);
+        if (m && !shadowhook_uibank_orig_dict) {
+            shadowhook_uibank_orig_dict =
+                (shadowhook_uibank_dict_imp_t)method_getImplementation(m);
+            method_setImplementation(m, (IMP)shadowhook_uibank_dict_replacement);
+            NSLog(@"[Shadow/UIBank] hooked +[NSDictionary dictionaryWithObjects:forKeys:count:]");
+        }
+    }
+}
+
 void shadowhook_uibank(void) {
+    // Defensive nil-handlers FIRST (always installable, no class lookup needed)
+    shadowhook_uibank_install_safe_creators();
+
     // Best-effort: try once now, then poll for up to 5 seconds in case the
     // target classes register slightly later. The +load self-kill happens
     // very early (during dyld init), so the first attempt usually catches it.
