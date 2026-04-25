@@ -133,6 +133,14 @@
             if([path containsString:@"/.jbroot-"]) {
                 return YES;
             }
+
+            // roothide: the systemhook injector dylib is at the literal path
+            // /usr/lib/systemhook-<16hex>.dylib (NOT under .jbroot-). When the
+            // app walks dyld_get_image_name() this name appears and is a
+            // dead-giveaway roothide marker.
+            if([path containsString:@"/systemhook-"]) {
+                return YES;
+            }
         }
 
         if([path hasPrefix:@"/usr/lib"]) {
