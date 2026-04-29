@@ -83,6 +83,24 @@ static void shadowhook_smbc_present_replacement(
         if (completion) completion();
         return;
     }
+    // Backstop: if vc is a UIAlertController whose title or message contains
+    // a JB-detection needle, suppress the present even though it was built via
+    // a path our +alertControllerWithTitle:message: swizzle did not intercept
+    // (e.g., [[UIAlertController alloc] init] + KVC setTitle/setMessage).
+    // UIBank_PRO syslog shows _willShowAlertController firing for a real
+    // UIAlertController with the Korean JB warning text on com.dnx.japan.ui.bank.
+    if ([vc isKindOfClass:[UIAlertController class]]) {
+        UIAlertController* alert = (UIAlertController*)vc;
+        NSString* title = alert.title;
+        NSString* message = alert.message;
+        if (shadowhook_smbc_text_is_blocklisted(title) ||
+            shadowhook_smbc_text_is_blocklisted(message)) {
+            NSLog(@"[Shadow/SMBC] suppress JB alert at present: title=%@ message=%@",
+                  title, message);
+            if (completion) completion();
+            return;
+        }
+    }
     shadowhook_smbc_orig_present(self, _cmd, vc, animated, completion);
 }
 
