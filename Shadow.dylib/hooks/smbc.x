@@ -447,6 +447,73 @@ static id shadowhook_uibank_fircls_begin_replacement(
 // downstream callers with broken state. The leaf-level FIRCLSSettingsManager
 // NOP is the right level to intercept; keep just that.
 
+// WMatrixMobile RASP NOPs (smbc30): WMatrixMobile.framework binary analysis
+// shows three short obfuscated ObjC selectors that look like JB detection:
+//   checkSP5         (likely "Security Policy 5" check)
+//   checkEngine:     (RASP engine state check)
+//   checkRefreshUpdate: (paired with RefreshUpdateCheck class)
+// The cstring section also has integrityPathArr — an array of paths the
+// RASP scans for JB indicators. Without knowing the exact host class for
+// each selector, walk objc_copyClassList() at install time and NOP any
+// class that responds to one of these selectors.
+
+static id shadowhook_uibank_wmatrix_nop_object(id self, SEL _cmd, ...) {
+    NSString* name = NSStringFromClass([self class]);
+    NSString* sel = NSStringFromSelector(_cmd);
+    NSLog(@"[Shadow/UIBank] NOP -[%@ %@]", name, sel);
+    smbc24_diag([NSString stringWithFormat:@"FIRE: NOP -[%@ %@]", name, sel]);
+    return nil;
+}
+
+static BOOL shadowhook_uibank_wmatrix_nop_bool(id self, SEL _cmd, ...) {
+    NSString* name = NSStringFromClass([self class]);
+    NSString* sel = NSStringFromSelector(_cmd);
+    NSLog(@"[Shadow/UIBank] NOP -[%@ %@] -> NO", name, sel);
+    smbc24_diag([NSString stringWithFormat:@"FIRE: NOP -[%@ %@] -> NO", name, sel]);
+    return NO;
+}
+
+static BOOL shadowhook_uibank_wmatrix_installed = NO;
+static void shadowhook_uibank_install_wmatrix_nops(void) {
+    if (shadowhook_uibank_wmatrix_installed) return;
+    NSArray<NSString*>* targets = @[ @"checkSP5", @"checkEngine:", @"checkRefreshUpdate:" ];
+    unsigned int outCount = 0;
+    Class* classes = objc_copyClassList(&outCount);
+    if (!classes) return;
+    int hits = 0;
+    for (unsigned int i = 0; i < outCount; i++) {
+        Class cls = classes[i];
+        // Skip system frameworks; WMatrixMobile classes start with "W" or are Swift-mangled
+        const char* name = class_getName(cls);
+        if (!name) continue;
+        // Heuristic: only consider classes whose name suggests WMatrix or are 1-2 char weird names
+        if (strncmp(name, "WMatrix", 7) != 0 &&
+            strncmp(name, "RefreshUpdate", 13) != 0 &&
+            strncmp(name, "Refresh", 7) != 0 &&
+            strstr(name, "WMatrix") == NULL) continue;
+        for (NSString* selName in targets) {
+            SEL sel = NSSelectorFromString(selName);
+            Method m = class_getInstanceMethod(cls, sel);
+            if (!m) continue;
+            const char* types = method_getTypeEncoding(m);
+            // Pick replacement IMP based on declared return type (first char of types).
+            IMP repl;
+            if (types && types[0] == 'B') {
+                repl = (IMP)shadowhook_uibank_wmatrix_nop_bool;
+            } else {
+                repl = (IMP)shadowhook_uibank_wmatrix_nop_object;
+            }
+            method_setImplementation(m, repl);
+            NSLog(@"[Shadow/UIBank] hooked -[%s %@]", name, selName);
+            smbc24_diag([NSString stringWithFormat:@"INSTALL: -[%s %@]", name, selName]);
+            hits++;
+        }
+    }
+    free(classes);
+    smbc24_diag([NSString stringWithFormat:@"WMatrix NOPs hits=%d", hits]);
+    if (hits > 0) shadowhook_uibank_wmatrix_installed = YES;
+}
+
 static BOOL shadowhook_uibank_install_once(void) {
     BOOL all_done = YES;
 
@@ -517,6 +584,11 @@ static BOOL shadowhook_uibank_install_once(void) {
             all_done = NO;
         }
     }
+
+    // Walk every loaded class once we have at least the WMatrix runtime up,
+    // and NOP any class that exposes the suspicious WMatrixMobile RASP
+    // selectors. Idempotent — only runs once after first hit.
+    shadowhook_uibank_install_wmatrix_nops();
 
     return all_done;
 }
