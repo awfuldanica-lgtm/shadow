@@ -431,8 +431,8 @@ static void shadowhook_uibank_jsalert_replacement(
 //   *** Terminating app due to uncaught exception 'NSInternalInconsistencyException'
 // Replace the impl with a no-op that returns @{}, same pattern as the
 // frida full_bypass35 NOP that worked on this method.
-static IMP shadowhook_uibank_orig_fircls_begin = NULL;
-static id shadowhook_uibank_fircls_begin_replacement(
+__attribute__((unused)) static IMP shadowhook_uibank_orig_fircls_begin = NULL;
+__attribute__((unused)) static id shadowhook_uibank_fircls_begin_replacement(
     id self, SEL _cmd, id googleAppId, id token) {
     NSLog(@"[Shadow/UIBank] NOP -[FIRCLSSettingsManager beginSettingsWithGoogleAppId:token:]");
     smbc24_diag(@"FIRE: NOP FIRCLSSettingsManager.beginSettingsWithGoogleAppId:token:");
