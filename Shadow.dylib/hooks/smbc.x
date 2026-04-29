@@ -342,6 +342,33 @@ static void shadowhook_smbc_block_swift_fatal(void) {
     smbc24_diag(@"FIRE: blocked swift fatal");
 }
 
+// SIGTRAP/SIGILL handler (smbc36): smbc35 hooked the named Swift runtime
+// fatal-error entry points but none fired before the 1s post-splash crash.
+// The kill is most likely a direct BRK #1 trap inline in user code (Swift
+// preconditionFailure on Optional unwrap or array-out-of-bounds, or a raw
+// __builtin_trap() in app C code) that bypasses every libc/ObjC/Swift-fn
+// hook. Catch it at the signal layer instead: sigaction handler for
+// SIGTRAP/SIGILL/SIGBUS that advances PC by 4 (size of arm64 BRK) so the
+// thread resumes past the trap. State is corrupted afterwards but the
+// process keeps running — same gamble as the swift fatal NOP, more
+// universal capture point.
+#include <signal.h>
+#include <ucontext.h>
+#include <string.h>
+static void shadowhook_smbc_sigtrap_handler(int sig, siginfo_t* info, void* context) {
+    void* faddr = info ? info->si_addr : NULL;
+    NSLog(@"[Shadow/SMBC] caught sig=%d at %p — advancing PC", sig, faddr);
+    smbc24_diag([NSString stringWithFormat:@"FIRE: caught sig=%d at %p", sig, faddr]);
+#if defined(__arm64__) || defined(__aarch64__)
+    if (context) {
+        ucontext_t* uc = (ucontext_t*)context;
+        if (uc->uc_mcontext) {
+            uc->uc_mcontext->__ss.__pc += 4;
+        }
+    }
+#endif
+}
+
 // +[NSException raise:format:] — variadic, matched by ObjC selector
 typedef void (*shadowhook_smbc_nsexc_raise_imp_t)(
     Class self, SEL _cmd, NSString* name, NSString* format, ...);
@@ -421,6 +448,20 @@ void shadowhook_smbc_terminators(HKSubstitutor* hooks) {
                     @"INSTALL: swift fatal sym %s", swift_fatal_syms[i]]);
             }
         }
+    }
+
+    // SIGTRAP/SIGILL/SIGBUS handler (smbc36) — catch direct BRK traps that
+    // bypass swift_runtime_on_report/Fatal symbol hooks.
+    {
+        struct sigaction sa = {0};
+        sa.sa_sigaction = shadowhook_smbc_sigtrap_handler;
+        sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGTRAP, &sa, NULL);
+        sigaction(SIGILL, &sa, NULL);
+        sigaction(SIGBUS, &sa, NULL);
+        NSLog(@"[Shadow/SMBC] installed SIGTRAP/SIGILL/SIGBUS handler");
+        smbc24_diag(@"INSTALL: SIGTRAP/SIGILL/SIGBUS handler");
     }
 
     NSLog(@"[Shadow/SMBC] terminator chain blocked");
