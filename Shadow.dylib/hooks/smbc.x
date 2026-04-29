@@ -447,6 +447,23 @@ static id shadowhook_uibank_fircls_begin_replacement(
 // downstream callers with broken state. The leaf-level FIRCLSSettingsManager
 // NOP is the right level to intercept; keep just that.
 
+// FraudAlertSDK JailBreak_fa NOP (smbc31): FraudAlertSDK.framework binary
+// (Caulis Inc. fraud SDK, jp.caulis.fraud.sdk) contains a class named
+// JailBreak_fa with three void methods:
+//   -[JailBreak_fa start]      // entry point that performs the JB check
+//   -[JailBreak_fa getData]    // collects detection result for the manager
+//   -[JailBreak_fa setDefault] // sets the no-JB baseline before start runs
+// Strings in the same binary include "JailBreak result : %d",
+// "/Applications/Cydia.app", "cydia://" — confirming this is the SDK's
+// JB-detection function plugged into FunctionsManager_fa.execFunctions::.
+// NOPing -[JailBreak_fa start] prevents the detection from ever running,
+// leaving whatever setDefault initialised in place.
+static IMP shadowhook_uibank_orig_jb_fa_start = NULL;
+static void shadowhook_uibank_jb_fa_start_replacement(id self, SEL _cmd) {
+    NSLog(@"[Shadow/UIBank] NOP -[JailBreak_fa start]");
+    smbc24_diag(@"FIRE: NOP -[JailBreak_fa start]");
+}
+
 // WMatrixMobile RASP NOPs (smbc30): WMatrixMobile.framework binary analysis
 // shows three short obfuscated ObjC selectors that look like JB detection:
 //   checkSP5         (likely "Security Policy 5" check)
@@ -577,6 +594,23 @@ static BOOL shadowhook_uibank_install_once(void) {
                 method_setImplementation(m, (IMP)shadowhook_uibank_fircls_begin_replacement);
                 NSLog(@"[Shadow/UIBank] hooked -[FIRCLSSettingsManager beginSettingsWithGoogleAppId:token:]");
                 smbc24_diag(@"INSTALL: -[FIRCLSSettingsManager beginSettingsWithGoogleAppId:token:]");
+            } else {
+                all_done = NO;
+            }
+        } else {
+            all_done = NO;
+        }
+    }
+
+    if (!shadowhook_uibank_orig_jb_fa_start) {
+        Class cls = NSClassFromString(@"JailBreak_fa");
+        if (cls) {
+            Method m = class_getInstanceMethod(cls, NSSelectorFromString(@"start"));
+            if (m) {
+                shadowhook_uibank_orig_jb_fa_start = method_getImplementation(m);
+                method_setImplementation(m, (IMP)shadowhook_uibank_jb_fa_start_replacement);
+                NSLog(@"[Shadow/UIBank] hooked -[JailBreak_fa start]");
+                smbc24_diag(@"INSTALL: -[JailBreak_fa start]");
             } else {
                 all_done = NO;
             }
