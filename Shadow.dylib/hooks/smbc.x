@@ -584,23 +584,24 @@ static BOOL shadowhook_uibank_install_once(void) {
         }
     }
 
-    if (!shadowhook_uibank_orig_fircls_begin) {
-        Class cls = NSClassFromString(@"FIRCLSSettingsManager");
-        if (cls) {
-            Method m = class_getInstanceMethod(
-                cls, NSSelectorFromString(@"beginSettingsWithGoogleAppId:token:"));
-            if (m) {
-                shadowhook_uibank_orig_fircls_begin = method_getImplementation(m);
-                method_setImplementation(m, (IMP)shadowhook_uibank_fircls_begin_replacement);
-                NSLog(@"[Shadow/UIBank] hooked -[FIRCLSSettingsManager beginSettingsWithGoogleAppId:token:]");
-                smbc24_diag(@"INSTALL: -[FIRCLSSettingsManager beginSettingsWithGoogleAppId:token:]");
-            } else {
-                all_done = NO;
-            }
-        } else {
-            all_done = NO;
-        }
-    }
+    // smbc33 diagnostic: FIRCLS NOP intentionally disabled.
+    // smbc32 confirmed the only NOP that ever fires is FIRCLSSettingsManager,
+    // and it fires ~1s before app death every time. Removing the NOP isolates
+    // whether the @{} return is itself the trigger (Swift fatal trap from a
+    // caller that treats empty settings as "tampered"), or whether the 1s
+    // crash exists independently of this NOP.
+    // if (!shadowhook_uibank_orig_fircls_begin) {
+    //     Class cls = NSClassFromString(@"FIRCLSSettingsManager");
+    //     if (cls) {
+    //         Method m = class_getInstanceMethod(
+    //             cls, NSSelectorFromString(@"beginSettingsWithGoogleAppId:token:"));
+    //         if (m) {
+    //             shadowhook_uibank_orig_fircls_begin = method_getImplementation(m);
+    //             method_setImplementation(m, (IMP)shadowhook_uibank_fircls_begin_replacement);
+    //             smbc24_diag(@"INSTALL: -[FIRCLSSettingsManager beginSettingsWithGoogleAppId:token:]");
+    //         } else { all_done = NO; }
+    //     } else { all_done = NO; }
+    // }
 
     if (!shadowhook_uibank_orig_jb_fa_start) {
         Class cls = NSClassFromString(@"JailBreak_fa");
