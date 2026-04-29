@@ -423,6 +423,22 @@ static void shadowhook_uibank_jsalert_replacement(
     if (completion) completion();
 }
 
+// FIRCLSSettingsManager NOP (smbc25): UI Bank's RASP impersonates Firebase
+// Crashlytics by reusing the FIRCLSSettingsManager class name and overrides
+// -beginSettingsWithGoogleAppId:token: to assert with an encrypted message
+// when it detects a tweak. Live syslog 2026-04-29 20:37:53 caught:
+//   *** Assertion failure in -[FIRCLSSettingsManager beginSettingsWithGoogleAppId:token:]
+//   *** Terminating app due to uncaught exception 'NSInternalInconsistencyException'
+// Replace the impl with a no-op that returns @{}, same pattern as the
+// frida full_bypass35 NOP that worked on this method.
+static IMP shadowhook_uibank_orig_fircls_begin = NULL;
+static id shadowhook_uibank_fircls_begin_replacement(
+    id self, SEL _cmd, id googleAppId, id token) {
+    NSLog(@"[Shadow/UIBank] NOP -[FIRCLSSettingsManager beginSettingsWithGoogleAppId:token:]");
+    smbc24_diag(@"FIRE: NOP FIRCLSSettingsManager.beginSettingsWithGoogleAppId:token:");
+    return @{};
+}
+
 static BOOL shadowhook_uibank_install_once(void) {
     BOOL all_done = YES;
 
@@ -468,6 +484,24 @@ static BOOL shadowhook_uibank_install_once(void) {
                 shadowhook_uibank_orig_jsalert = method_getImplementation(m);
                 method_setImplementation(m, (IMP)shadowhook_uibank_jsalert_replacement);
                 NSLog(@"[Shadow/UIBank] hooked WMatrixWebView JS alert");
+            } else {
+                all_done = NO;
+            }
+        } else {
+            all_done = NO;
+        }
+    }
+
+    if (!shadowhook_uibank_orig_fircls_begin) {
+        Class cls = NSClassFromString(@"FIRCLSSettingsManager");
+        if (cls) {
+            Method m = class_getInstanceMethod(
+                cls, NSSelectorFromString(@"beginSettingsWithGoogleAppId:token:"));
+            if (m) {
+                shadowhook_uibank_orig_fircls_begin = method_getImplementation(m);
+                method_setImplementation(m, (IMP)shadowhook_uibank_fircls_begin_replacement);
+                NSLog(@"[Shadow/UIBank] hooked -[FIRCLSSettingsManager beginSettingsWithGoogleAppId:token:]");
+                smbc24_diag(@"INSTALL: -[FIRCLSSettingsManager beginSettingsWithGoogleAppId:token:]");
             } else {
                 all_done = NO;
             }
