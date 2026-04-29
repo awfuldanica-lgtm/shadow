@@ -327,6 +327,21 @@ static void shadowhook_smbc_block_cxa_throw(void* a, void* b, void (*c)(void*)) 
     NSLog(@"[Shadow/SMBC] blocked __cxa_throw");
 }
 
+// Swift fatal-error block (smbc35). All Swift runtime "report fatal error"
+// entry points have different signatures, but they all share the property
+// that they're __noreturn and end in a BRK trap. We replace them all with
+// the same arg-agnostic stub that just logs and returns. The caller is
+// __noreturn-expecting so returning is technically UB, but in practice
+// most call sites are compiled with the next instruction being unreachable
+// and the abort happens via the trap deeper in the function — preventing
+// the trap by returning early lets the caller continue (with broken
+// invariants we can't repair, but at least not crashed).
+__attribute__((unused))
+static void shadowhook_smbc_block_swift_fatal(void) {
+    NSLog(@"[Shadow/SMBC] blocked swift_fatal");
+    smbc24_diag(@"FIRE: blocked swift fatal");
+}
+
 // +[NSException raise:format:] — variadic, matched by ObjC selector
 typedef void (*shadowhook_smbc_nsexc_raise_imp_t)(
     Class self, SEL _cmd, NSString* name, NSString* format, ...);
@@ -372,6 +387,39 @@ void shadowhook_smbc_terminators(HKSubstitutor* hooks) {
                 (shadowhook_smbc_nsexc_raise_imp_t)method_getImplementation(m);
             method_setImplementation(m, (IMP)shadowhook_smbc_nsexception_raise_replacement);
             NSLog(@"[Shadow/SMBC] hooked +[NSException raise:format:]");
+        }
+    }
+
+    // Swift runtime fatal-error hooks (smbc35): UI Bank crashes ~1s after
+    // splash via a path that bypasses libc.exit and ObjC NSException. The
+    // most likely vector is Swift fatalError() / preconditionFailure() which
+    // compile to BRK #1 (SIGTRAP) trap, not via libc. Hook the Swift runtime
+    // reporting symbols that lead to the trap and replace with NOPs.
+    // dlsym lookup so we don't link against libswiftCore directly.
+    {
+        const char* swift_fatal_syms[] = {
+            "swift_runtime_on_report",
+            "_swift_runtime_on_report",
+            "swift_runtime_on_failure",
+            "_swift_runtime_on_failure",
+            "_swift_stdlib_reportFatalError",
+            "_swift_stdlib_reportFatalErrorInFile",
+            "_swift_assertionFailure",
+            "_swift_unexpected",
+            "_swift_fatalError",
+            "_swift_arrayInitializeBufferWithTakeOfBuffer",
+            NULL
+        };
+        for (int i = 0; swift_fatal_syms[i]; i++) {
+            void* addr = dlsym(RTLD_DEFAULT, swift_fatal_syms[i]);
+            if (addr) {
+                void* orig = NULL;
+                MSHookFunction(addr, (void*)shadowhook_smbc_block_swift_fatal,
+                               &orig);
+                NSLog(@"[Shadow/SMBC] hooked %s @ %p", swift_fatal_syms[i], addr);
+                smbc24_diag([NSString stringWithFormat:
+                    @"INSTALL: swift fatal sym %s", swift_fatal_syms[i]]);
+            }
         }
     }
 
