@@ -18,6 +18,38 @@
 #import <signal.h>
 #import <stdlib.h>
 
+// ---------- diagnostics (smbc24) ----------
+//
+// NSLog from this dylib does not appear in idevicesyslog (presumably routed
+// through a private os_log channel that requires Apple's logging profile).
+// Append events to a file in the host app's NSDocumentDirectory so we can
+// read it back via NewTerm:
+//   sudo find /var/mobile/Containers/Data/Application -name "shadow_smbc24.log"
+//   cat <found path>
+
+void smbc24_diag(NSString* event) {
+    @try {
+        static NSString* path = nil;
+        static dispatch_once_t once = 0;
+        dispatch_once(&once, ^{
+            NSArray* dirs = NSSearchPathForDirectoriesInDomains(
+                NSDocumentDirectory, NSUserDomainMask, YES);
+            if (dirs.count == 0) return;
+            path = [[dirs firstObject] stringByAppendingPathComponent:@"shadow_smbc24.log"];
+            [[NSString stringWithFormat:@"=== smbc24 session %@ ===\n", [NSDate date]]
+                writeToFile:path atomically:NO encoding:NSUTF8StringEncoding error:nil];
+        });
+        if (!path) return;
+        NSString* line = [NSString stringWithFormat:@"%@ %@\n", [NSDate date], event];
+        NSFileHandle* fh = [NSFileHandle fileHandleForWritingAtPath:path];
+        if (fh) {
+            [fh seekToEndOfFile];
+            [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+            [fh closeFile];
+        }
+    } @catch (id ex) {}
+}
+
 // ---------- needles ----------
 
 static NSArray<NSString *>* shadowhook_smbc_needles(void) {
@@ -62,6 +94,8 @@ static shadowhook_smbc_alert_imp_t shadowhook_smbc_orig_alert = NULL;
 
 static UIAlertController* shadowhook_smbc_alert_replacement(
     Class self, SEL _cmd, NSString* title, NSString* message, UIAlertControllerStyle style) {
+    smbc24_diag([NSString stringWithFormat:@"FIRE: +alertControllerWithTitle: title=%@ message=%@",
+                 title ?: @"(nil)", message ?: @"(nil)"]);
     if (shadowhook_smbc_text_is_blocklisted(title) ||
         shadowhook_smbc_text_is_blocklisted(message)) {
         NSLog(@"[Shadow/SMBC] suppress alert: title=%@ message=%@", title, message);
@@ -78,6 +112,8 @@ static shadowhook_smbc_present_imp_t shadowhook_smbc_orig_present = NULL;
 
 static void shadowhook_smbc_present_replacement(
     id self, SEL _cmd, UIViewController* vc, BOOL animated, void (^completion)(void)) {
+    smbc24_diag([NSString stringWithFormat:@"FIRE: presentViewController: vcClass=%@",
+                 vc ? NSStringFromClass([vc class]) : @"(nil)"]);
     if (vc == nil) {
         NSLog(@"[Shadow/SMBC] skip present (nil vc)");
         if (completion) completion();
@@ -122,6 +158,11 @@ typedef void (*shadowhook_smbc_vwa_imp_t)(id self, SEL _cmd, BOOL animated);
 static shadowhook_smbc_vwa_imp_t shadowhook_smbc_orig_vwa = NULL;
 
 static void shadowhook_smbc_vwa_replacement(id self, SEL _cmd, BOOL animated) {
+    if ([self isKindOfClass:[UIAlertController class]]) {
+        smbc24_diag([NSString stringWithFormat:@"FIRE: UIVC.viewWillAppear: selfClass=%@ title=%@",
+                     NSStringFromClass([self class]),
+                     [(UIAlertController*)self title] ?: @"(nil)"]);
+    }
     UIAlertController* alertSelf = nil;
     BOOL shouldDismiss = NO;
     if ([self isKindOfClass:[UIAlertController class]]) {
@@ -164,6 +205,8 @@ static void shadowhook_smbc_alert_vwa_replacement(id self, SEL _cmd, BOOL animat
     UIAlertController* alert = (UIAlertController*)self;
     NSString* title = alert.title;
     NSString* message = alert.message;
+    smbc24_diag([NSString stringWithFormat:@"FIRE: UIAlertController.viewWillAppear: title=%@",
+                 title ?: @"(nil)"]);
     BOOL hit = (shadowhook_smbc_text_is_blocklisted(title) ||
                 shadowhook_smbc_text_is_blocklisted(message));
     shadowhook_smbc_orig_alert_vwa(self, _cmd, animated);
@@ -191,6 +234,7 @@ void shadowhook_smbc_alerts(void) {
                 (shadowhook_smbc_alert_imp_t)method_getImplementation(m);
             method_setImplementation(m, (IMP)shadowhook_smbc_alert_replacement);
             NSLog(@"[Shadow/SMBC] hooked +alertControllerWithTitle:message:preferredStyle:");
+            smbc24_diag(@"INSTALL: +alertControllerWithTitle:message:preferredStyle:");
         }
     }
     {
@@ -202,6 +246,7 @@ void shadowhook_smbc_alerts(void) {
                 (shadowhook_smbc_present_imp_t)method_getImplementation(m);
             method_setImplementation(m, (IMP)shadowhook_smbc_present_replacement);
             NSLog(@"[Shadow/SMBC] hooked -presentViewController:animated:completion:");
+            smbc24_diag(@"INSTALL: -[UIViewController presentViewController:]");
         }
     }
     {
@@ -213,6 +258,7 @@ void shadowhook_smbc_alerts(void) {
                 (shadowhook_smbc_vwa_imp_t)method_getImplementation(m);
             method_setImplementation(m, (IMP)shadowhook_smbc_vwa_replacement);
             NSLog(@"[Shadow/SMBC] hooked -[UIViewController viewWillAppear:]");
+            smbc24_diag(@"INSTALL: -[UIViewController viewWillAppear:]");
         }
     }
     {
@@ -227,8 +273,10 @@ void shadowhook_smbc_alerts(void) {
                 (shadowhook_smbc_vwa_imp_t)method_getImplementation(acm);
             method_setImplementation(acm, (IMP)shadowhook_smbc_alert_vwa_replacement);
             NSLog(@"[Shadow/SMBC] hooked -[UIAlertController viewWillAppear:] (own override)");
+            smbc24_diag(@"INSTALL: -[UIAlertController viewWillAppear:] (own override)");
         } else if (acm == ucm) {
             NSLog(@"[Shadow/SMBC] UIAlertController inherits viewWillAppear: from UIViewController");
+            smbc24_diag(@"INSTALL_NOTE: UIAlertController inherits viewWillAppear: from parent");
         }
     }
 }

@@ -148,6 +148,11 @@
     // shadow hook that might fail and abort the ctor mid-way.
     // These do NOT depend on HookKit/substitutor; they use plain
     // method_setImplementation (ObjC swizzle) and direct dlsym MSHookFunction.
+    extern void smbc24_diag(NSString* event);
+    if ([bundleIdentifier isEqualToString:@"com.dnx.japan.ui.bank"]) {
+        smbc24_diag([NSString stringWithFormat:@"CTOR_REACHED bundle=%@ exec=%@",
+                     bundleIdentifier, executablePath]);
+    }
     if (isTargetBank) {
         shadowhook_smbc_alerts();
     }
