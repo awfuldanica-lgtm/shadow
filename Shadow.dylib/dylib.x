@@ -70,22 +70,36 @@
               isUIBank ? @"UI Bank" : @"SMBC");
 
         if (isUIBank) {
-            // UI Bank profile (smbc22): try root-cause approach — hide JB file
-            // paths from the RASP so it never decides to construct the alert.
-            // Earlier (pre-smbc18) attempts at path hiding caused RASP to feed
-            // nil into NSDictionary/NSCharacterSet creators and crash. smbc17
-            // installed nil-safe NSDictionary/NSCharacterSet creators, smbc18
-            // changed the +load NOPs to return @{} instead of leaving x0
-            // garbage, and smbc19/20/21 added presentation-side alert
-            // suppression that didn't fire (the alert reaches the user via a
-            // path that bypasses both presentViewController: and viewWillAppear:).
-            // With those nil-tolerance defenses now in place, re-enable
-            // Hook_Filesystem to break RASP's input rather than chase the
-            // alert through the UI layer.
+            // UI Bank profile (smbc23): same all-on profile as SMBC. smbc22's
+            // path-hiding-only attempt did not stop the JB alert, so RASP is
+            // reading JB indicators from somewhere other than the file API
+            // surface (most likely dlopen, sysctl, or mach). The historical
+            // reason all hooks were OFF was that aggressive hiding caused RASP
+            // to feed nil downstream and abort. Those abort paths are now
+            // defended by smbc17's nil-safe NSDictionary/NSCharacterSet
+            // creators and smbc18's @{} NOPs, so the full hook set should be
+            // survivable now.
             prefs_load = @{
                 @"App_Enabled" : @YES,
-                @"HK_Library"  : @"fishhook",
+                @"HK_Library" : @"fishhook",
                 @"Hook_Filesystem" : @YES,
+                @"Hook_DynamicLibraries" : @YES,
+                @"Hook_URLScheme" : @YES,
+                @"Hook_EnvVars" : @YES,
+                @"Hook_DeviceCheck" : @YES,
+                @"Hook_SymLookup" : @YES,
+                @"Hook_DynamicLibrariesExtra" : @YES,
+                @"Hook_HideApps" : @YES,
+                @"Hook_AntiDebugging" : @YES,
+                @"Hook_Syscall" : @YES,
+                @"Hook_LowLevelC" : @YES,
+                @"Hook_Sandbox" : @YES,
+                @"Hook_MachBootstrap" : @YES,
+                @"Hook_Memory" : @YES,
+                @"Hook_Foundation" : @YES,
+                @"Hook_ObjCRuntime" : @YES,
+                @"Hook_TweakClasses" : @YES,
+                @"Hook_FakeMac" : @NO,
             };
         } else {
             // SMBC profile (working): aggressive hooks
