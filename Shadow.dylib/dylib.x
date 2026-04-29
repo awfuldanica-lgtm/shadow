@@ -70,21 +70,24 @@
               isUIBank ? @"UI Bank" : @"SMBC");
 
         if (isUIBank) {
-            // UI Bank profile (smbc23): same all-on profile as SMBC. smbc22's
-            // path-hiding-only attempt did not stop the JB alert, so RASP is
-            // reading JB indicators from somewhere other than the file API
-            // surface (most likely dlopen, sysctl, or mach). The historical
-            // reason all hooks were OFF was that aggressive hiding caused RASP
-            // to feed nil downstream and abort. Those abort paths are now
-            // defended by smbc17's nil-safe NSDictionary/NSCharacterSet
-            // creators and smbc18's @{} NOPs, so the full hook set should be
-            // survivable now.
+            // UI Bank profile (smbc26): smbc25 unlocked the JB self-kill path
+            // by NOPing FIRCLSSettingsManager — app now reaches its real splash
+            // for 1 second before crashing. Live syslog (Apr 29 21:00:17)
+            // shows immediately after splash:
+            //   - CFNetwork task -1002 (NSURLErrorUnsupportedURL) — URL malformed
+            //   - WMatrixMobile <Error> private
+            //   - "Could not load 'sp_toolbar.png' from Nakjin-Kim.gma-common"
+            //   - hundreds of "CGImageSourceRef was already released"
+            // First two suggest Hook_URLScheme is making URLs invalid; the
+            // bundle/image loss suggests Hook_Foundation's NSBundle is
+            // hiding gma-common's own resources from itself. Disable both
+            // and keep the rest, see where the next crash happens.
             prefs_load = @{
                 @"App_Enabled" : @YES,
                 @"HK_Library" : @"fishhook",
                 @"Hook_Filesystem" : @YES,
                 @"Hook_DynamicLibraries" : @YES,
-                @"Hook_URLScheme" : @YES,
+                @"Hook_URLScheme" : @NO,
                 @"Hook_EnvVars" : @YES,
                 @"Hook_DeviceCheck" : @YES,
                 @"Hook_SymLookup" : @YES,
@@ -96,7 +99,7 @@
                 @"Hook_Sandbox" : @YES,
                 @"Hook_MachBootstrap" : @YES,
                 @"Hook_Memory" : @YES,
-                @"Hook_Foundation" : @YES,
+                @"Hook_Foundation" : @NO,
                 @"Hook_ObjCRuntime" : @YES,
                 @"Hook_TweakClasses" : @YES,
                 @"Hook_FakeMac" : @NO,
