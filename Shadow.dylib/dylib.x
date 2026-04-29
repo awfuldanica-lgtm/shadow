@@ -70,17 +70,22 @@
               isUIBank ? @"UI Bank" : @"SMBC");
 
         if (isUIBank) {
-            // UI Bank profile: shadow's path/dyld hiding causes its hybrid-webview
-            // RASP (FraudAlertSDK + WMatrixMobile) to receive nil for things it
-            // expected to find, leading to NSDictionary / NSCharacterSet creation
-            // crashes downstream. Keep ALL path-hiding OFF and rely solely on the
-            // alert/terminator/+load NOPs installed by shadowhook_smbc_alerts and
-            // shadowhook_uibank() to deflect the popup.
+            // UI Bank profile (smbc22): try root-cause approach — hide JB file
+            // paths from the RASP so it never decides to construct the alert.
+            // Earlier (pre-smbc18) attempts at path hiding caused RASP to feed
+            // nil into NSDictionary/NSCharacterSet creators and crash. smbc17
+            // installed nil-safe NSDictionary/NSCharacterSet creators, smbc18
+            // changed the +load NOPs to return @{} instead of leaving x0
+            // garbage, and smbc19/20/21 added presentation-side alert
+            // suppression that didn't fire (the alert reaches the user via a
+            // path that bypasses both presentViewController: and viewWillAppear:).
+            // With those nil-tolerance defenses now in place, re-enable
+            // Hook_Filesystem to break RASP's input rather than chase the
+            // alert through the UI layer.
             prefs_load = @{
                 @"App_Enabled" : @YES,
                 @"HK_Library"  : @"fishhook",
-                // every Hook_* OFF — we want the app to see real values so its
-                // RASP code does not derail mid-decision
+                @"Hook_Filesystem" : @YES,
             };
         } else {
             // SMBC profile (working): aggressive hooks
