@@ -439,6 +439,30 @@ static id shadowhook_uibank_fircls_begin_replacement(
     return @{};
 }
 
+// FIRCLSReportManager NOPs (smbc28): smbc25's FIRCLSSettingsManager NOP
+// fires (confirmed in shadow_smbc24.log) but app still crashes ~1s after
+// reaching the splash screen. The frida full_bypass35.js script that
+// previously got further also NOPed two upstream methods on
+// FIRCLSReportManager — the layer that calls into FIRCLSSettingsManager.
+// Cutting at the upstream caller stops the cascade earlier so the
+// SettingsManager NOP @{} return doesn't get fed to whatever comes next
+// in ReportManager that may trigger the secondary kill path observed
+// (WMatrixMobile <Error> private + image-release loop).
+static IMP shadowhook_uibank_orig_fircls_start = NULL;
+static id shadowhook_uibank_fircls_start_replacement(id self, SEL _cmd) {
+    NSLog(@"[Shadow/UIBank] NOP -[FIRCLSReportManager startWithProfiling]");
+    smbc24_diag(@"FIRE: NOP FIRCLSReportManager.startWithProfiling");
+    return @{};
+}
+
+static IMP shadowhook_uibank_orig_fircls_begin_token = NULL;
+static id shadowhook_uibank_fircls_begin_token_replacement(
+    id self, SEL _cmd, id token) {
+    NSLog(@"[Shadow/UIBank] NOP -[FIRCLSReportManager beginSettingsWithToken:]");
+    smbc24_diag(@"FIRE: NOP FIRCLSReportManager.beginSettingsWithToken:");
+    return @{};
+}
+
 static BOOL shadowhook_uibank_install_once(void) {
     BOOL all_done = YES;
 
@@ -502,6 +526,42 @@ static BOOL shadowhook_uibank_install_once(void) {
                 method_setImplementation(m, (IMP)shadowhook_uibank_fircls_begin_replacement);
                 NSLog(@"[Shadow/UIBank] hooked -[FIRCLSSettingsManager beginSettingsWithGoogleAppId:token:]");
                 smbc24_diag(@"INSTALL: -[FIRCLSSettingsManager beginSettingsWithGoogleAppId:token:]");
+            } else {
+                all_done = NO;
+            }
+        } else {
+            all_done = NO;
+        }
+    }
+
+    if (!shadowhook_uibank_orig_fircls_start) {
+        Class cls = NSClassFromString(@"FIRCLSReportManager");
+        if (cls) {
+            Method m = class_getInstanceMethod(
+                cls, NSSelectorFromString(@"startWithProfiling"));
+            if (m) {
+                shadowhook_uibank_orig_fircls_start = method_getImplementation(m);
+                method_setImplementation(m, (IMP)shadowhook_uibank_fircls_start_replacement);
+                NSLog(@"[Shadow/UIBank] hooked -[FIRCLSReportManager startWithProfiling]");
+                smbc24_diag(@"INSTALL: -[FIRCLSReportManager startWithProfiling]");
+            } else {
+                all_done = NO;
+            }
+        } else {
+            all_done = NO;
+        }
+    }
+
+    if (!shadowhook_uibank_orig_fircls_begin_token) {
+        Class cls = NSClassFromString(@"FIRCLSReportManager");
+        if (cls) {
+            Method m = class_getInstanceMethod(
+                cls, NSSelectorFromString(@"beginSettingsWithToken:"));
+            if (m) {
+                shadowhook_uibank_orig_fircls_begin_token = method_getImplementation(m);
+                method_setImplementation(m, (IMP)shadowhook_uibank_fircls_begin_token_replacement);
+                NSLog(@"[Shadow/UIBank] hooked -[FIRCLSReportManager beginSettingsWithToken:]");
+                smbc24_diag(@"INSTALL: -[FIRCLSReportManager beginSettingsWithToken:]");
             } else {
                 all_done = NO;
             }
