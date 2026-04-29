@@ -70,24 +70,36 @@
               isUIBank ? @"UI Bank" : @"SMBC");
 
         if (isUIBank) {
-            // UI Bank profile (smbc27): minimal profile, all Hook_* OFF.
-            // smbc26 (URLScheme+Foundation off, rest on) showed Hook_URLScheme
-            // killed the network -1002 error (good) but Hook_Filesystem at libc
-            // level was still blocking FraudAlertSDK's own setting file
-            // ("[FASDK] Setting file is not found.") and gma-common's own
-            // bundled images (sp_toolbar.png etc.) — shadow misclassified
-            // resources inside UIBank_PRO.app/Frameworks as restricted.
-            //
-            // The actual JB-bypass winner is the smbc25 FIRCLSSettingsManager
-            // NOP, installed manually by shadowhook_uibank() regardless of
-            // these flags. All Hook_* surface only adds friction (or worse,
-            // breaks the app's own resource lookups). Strip back to baseline
-            // so app sees its own files normally and rely on the manual NOPs
-            // for actual bypass.
+            // UI Bank profile (smbc32): try the full SMBC hook profile combined
+            // with all the NOPs accumulated through smbc25/smbc30/smbc31
+            // (FIRCLSSettingsManager, JailBreak_fa.start, WMatrix checkSP5/
+            // checkEngine:/checkRefreshUpdate:). The path/dyld/class hiding
+            // hooks were turned off in smbc27 because they broke gma-common
+            // resource lookup, but with the NOPs now stopping the FIRCLS chain
+            // and JailBreak_fa, perfect hiding may keep RASP from ever entering
+            // the fallback decrypt-failure mode that produces those bundle
+            // errors. This is the "all hooks + all NOPs" union.
             prefs_load = @{
                 @"App_Enabled" : @YES,
-                @"HK_Library"  : @"fishhook",
-                // every Hook_* OFF intentionally
+                @"HK_Library" : @"fishhook",
+                @"Hook_Filesystem" : @YES,
+                @"Hook_DynamicLibraries" : @YES,
+                @"Hook_URLScheme" : @NO,
+                @"Hook_EnvVars" : @YES,
+                @"Hook_DeviceCheck" : @YES,
+                @"Hook_SymLookup" : @YES,
+                @"Hook_DynamicLibrariesExtra" : @YES,
+                @"Hook_HideApps" : @YES,
+                @"Hook_AntiDebugging" : @YES,
+                @"Hook_Syscall" : @YES,
+                @"Hook_LowLevelC" : @YES,
+                @"Hook_Sandbox" : @YES,
+                @"Hook_MachBootstrap" : @YES,
+                @"Hook_Memory" : @YES,
+                @"Hook_Foundation" : @NO,
+                @"Hook_ObjCRuntime" : @YES,
+                @"Hook_TweakClasses" : @YES,
+                @"Hook_FakeMac" : @NO,
             };
         } else {
             // SMBC profile (working): aggressive hooks
