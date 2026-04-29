@@ -431,8 +431,8 @@ static void shadowhook_uibank_jsalert_replacement(
 //   *** Terminating app due to uncaught exception 'NSInternalInconsistencyException'
 // Replace the impl with a no-op that returns @{}, same pattern as the
 // frida full_bypass35 NOP that worked on this method.
-__attribute__((unused)) static IMP shadowhook_uibank_orig_fircls_begin = NULL;
-__attribute__((unused)) static id shadowhook_uibank_fircls_begin_replacement(
+static IMP shadowhook_uibank_orig_fircls_begin = NULL;
+static id shadowhook_uibank_fircls_begin_replacement(
     id self, SEL _cmd, id googleAppId, id token) {
     NSLog(@"[Shadow/UIBank] NOP -[FIRCLSSettingsManager beginSettingsWithGoogleAppId:token:]");
     smbc24_diag(@"FIRE: NOP FIRCLSSettingsManager.beginSettingsWithGoogleAppId:token:");
@@ -584,24 +584,23 @@ static BOOL shadowhook_uibank_install_once(void) {
         }
     }
 
-    // smbc33 diagnostic: FIRCLS NOP intentionally disabled.
-    // smbc32 confirmed the only NOP that ever fires is FIRCLSSettingsManager,
-    // and it fires ~1s before app death every time. Removing the NOP isolates
-    // whether the @{} return is itself the trigger (Swift fatal trap from a
-    // caller that treats empty settings as "tampered"), or whether the 1s
-    // crash exists independently of this NOP.
-    // if (!shadowhook_uibank_orig_fircls_begin) {
-    //     Class cls = NSClassFromString(@"FIRCLSSettingsManager");
-    //     if (cls) {
-    //         Method m = class_getInstanceMethod(
-    //             cls, NSSelectorFromString(@"beginSettingsWithGoogleAppId:token:"));
-    //         if (m) {
-    //             shadowhook_uibank_orig_fircls_begin = method_getImplementation(m);
-    //             method_setImplementation(m, (IMP)shadowhook_uibank_fircls_begin_replacement);
-    //             smbc24_diag(@"INSTALL: -[FIRCLSSettingsManager beginSettingsWithGoogleAppId:token:]");
-    //         } else { all_done = NO; }
-    //     } else { all_done = NO; }
-    // }
+    if (!shadowhook_uibank_orig_fircls_begin) {
+        Class cls = NSClassFromString(@"FIRCLSSettingsManager");
+        if (cls) {
+            Method m = class_getInstanceMethod(
+                cls, NSSelectorFromString(@"beginSettingsWithGoogleAppId:token:"));
+            if (m) {
+                shadowhook_uibank_orig_fircls_begin = method_getImplementation(m);
+                method_setImplementation(m, (IMP)shadowhook_uibank_fircls_begin_replacement);
+                NSLog(@"[Shadow/UIBank] hooked -[FIRCLSSettingsManager beginSettingsWithGoogleAppId:token:]");
+                smbc24_diag(@"INSTALL: -[FIRCLSSettingsManager beginSettingsWithGoogleAppId:token:]");
+            } else {
+                all_done = NO;
+            }
+        } else {
+            all_done = NO;
+        }
+    }
 
     if (!shadowhook_uibank_orig_jb_fa_start) {
         Class cls = NSClassFromString(@"JailBreak_fa");
