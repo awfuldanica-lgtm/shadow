@@ -149,6 +149,38 @@ static void shadowhook_smbc_vwa_replacement(id self, SEL _cmd, BOOL animated) {
     }
 }
 
+// (b3) UIAlertController-specific viewWillAppear: override (smbc21).
+//
+// smbc20 hooked -[UIViewController viewWillAppear:] but UI Bank's JB alert
+// still reached the user fully displayed. UIAlertController has its own
+// viewWillAppear: override in iOS UIKit; replacing the UIViewController-class
+// IMP does not affect dispatch to UIAlertController's overridden IMP.
+// Hook the UIAlertController-class Method directly so the override path is
+// covered.
+
+static shadowhook_smbc_vwa_imp_t shadowhook_smbc_orig_alert_vwa = NULL;
+
+static void shadowhook_smbc_alert_vwa_replacement(id self, SEL _cmd, BOOL animated) {
+    UIAlertController* alert = (UIAlertController*)self;
+    NSString* title = alert.title;
+    NSString* message = alert.message;
+    BOOL hit = (shadowhook_smbc_text_is_blocklisted(title) ||
+                shadowhook_smbc_text_is_blocklisted(message));
+    shadowhook_smbc_orig_alert_vwa(self, _cmd, animated);
+    if (hit) {
+        NSLog(@"[Shadow/SMBC] suppress alert at -[UIAlertController viewWillAppear:]: title=%@ message=%@",
+              title, message);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIViewController* presenting = alert.presentingViewController;
+            if (presenting) {
+                [presenting dismissViewControllerAnimated:NO completion:nil];
+            } else {
+                [alert dismissViewControllerAnimated:NO completion:nil];
+            }
+        });
+    }
+}
+
 void shadowhook_smbc_alerts(void) {
     {
         Class cls = [UIAlertController class];
@@ -181,6 +213,22 @@ void shadowhook_smbc_alerts(void) {
                 (shadowhook_smbc_vwa_imp_t)method_getImplementation(m);
             method_setImplementation(m, (IMP)shadowhook_smbc_vwa_replacement);
             NSLog(@"[Shadow/SMBC] hooked -[UIViewController viewWillAppear:]");
+        }
+    }
+    {
+        // Cover the case where UIAlertController has its own viewWillAppear:
+        // override (which iOS does — alerts run private setup at this point).
+        // Only install if its Method differs from UIViewController's; if it
+        // inherits, the parent hook above already covers it.
+        Method ucm = class_getInstanceMethod([UIViewController class], @selector(viewWillAppear:));
+        Method acm = class_getInstanceMethod([UIAlertController class], @selector(viewWillAppear:));
+        if (acm && acm != ucm) {
+            shadowhook_smbc_orig_alert_vwa =
+                (shadowhook_smbc_vwa_imp_t)method_getImplementation(acm);
+            method_setImplementation(acm, (IMP)shadowhook_smbc_alert_vwa_replacement);
+            NSLog(@"[Shadow/SMBC] hooked -[UIAlertController viewWillAppear:] (own override)");
+        } else if (acm == ucm) {
+            NSLog(@"[Shadow/SMBC] UIAlertController inherits viewWillAppear: from UIViewController");
         }
     }
 }
