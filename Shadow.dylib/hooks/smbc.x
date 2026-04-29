@@ -352,8 +352,11 @@ static void shadowhook_smbc_block_swift_fatal(void) {
 // thread resumes past the trap. State is corrupted afterwards but the
 // process keeps running — same gamble as the swift fatal NOP, more
 // universal capture point.
+#define _XOPEN_SOURCE 700
 #include <signal.h>
-#include <ucontext.h>
+#include <sys/ucontext.h>
+#include <mach/arm/thread_state.h>
+#include <ptrauth.h>
 #include <string.h>
 static void shadowhook_smbc_sigtrap_handler(int sig, siginfo_t* info, void* context) {
     void* faddr = info ? info->si_addr : NULL;
@@ -363,7 +366,12 @@ static void shadowhook_smbc_sigtrap_handler(int sig, siginfo_t* info, void* cont
     if (context) {
         ucontext_t* uc = (ucontext_t*)context;
         if (uc->uc_mcontext) {
-            uc->uc_mcontext->__ss.__pc += 4;
+            // PC may be signed under arm64e PAC. Strip the auth, advance by
+            // BRK instruction size, re-sign as a function pointer so resume
+            // works on both arm64 and arm64e devices.
+            uint64_t pc = (uint64_t)arm_thread_state64_get_pc(uc->uc_mcontext->__ss);
+            arm_thread_state64_set_pc_fptr(uc->uc_mcontext->__ss,
+                (void(*)(void))(pc + 4));
         }
     }
 #endif
