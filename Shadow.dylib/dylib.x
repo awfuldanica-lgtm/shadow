@@ -70,39 +70,24 @@
               isUIBank ? @"UI Bank" : @"SMBC");
 
         if (isUIBank) {
-            // UI Bank profile (smbc26): smbc25 unlocked the JB self-kill path
-            // by NOPing FIRCLSSettingsManager — app now reaches its real splash
-            // for 1 second before crashing. Live syslog (Apr 29 21:00:17)
-            // shows immediately after splash:
-            //   - CFNetwork task -1002 (NSURLErrorUnsupportedURL) — URL malformed
-            //   - WMatrixMobile <Error> private
-            //   - "Could not load 'sp_toolbar.png' from Nakjin-Kim.gma-common"
-            //   - hundreds of "CGImageSourceRef was already released"
-            // First two suggest Hook_URLScheme is making URLs invalid; the
-            // bundle/image loss suggests Hook_Foundation's NSBundle is
-            // hiding gma-common's own resources from itself. Disable both
-            // and keep the rest, see where the next crash happens.
+            // UI Bank profile (smbc27): minimal profile, all Hook_* OFF.
+            // smbc26 (URLScheme+Foundation off, rest on) showed Hook_URLScheme
+            // killed the network -1002 error (good) but Hook_Filesystem at libc
+            // level was still blocking FraudAlertSDK's own setting file
+            // ("[FASDK] Setting file is not found.") and gma-common's own
+            // bundled images (sp_toolbar.png etc.) — shadow misclassified
+            // resources inside UIBank_PRO.app/Frameworks as restricted.
+            //
+            // The actual JB-bypass winner is the smbc25 FIRCLSSettingsManager
+            // NOP, installed manually by shadowhook_uibank() regardless of
+            // these flags. All Hook_* surface only adds friction (or worse,
+            // breaks the app's own resource lookups). Strip back to baseline
+            // so app sees its own files normally and rely on the manual NOPs
+            // for actual bypass.
             prefs_load = @{
                 @"App_Enabled" : @YES,
-                @"HK_Library" : @"fishhook",
-                @"Hook_Filesystem" : @YES,
-                @"Hook_DynamicLibraries" : @YES,
-                @"Hook_URLScheme" : @NO,
-                @"Hook_EnvVars" : @YES,
-                @"Hook_DeviceCheck" : @YES,
-                @"Hook_SymLookup" : @YES,
-                @"Hook_DynamicLibrariesExtra" : @YES,
-                @"Hook_HideApps" : @YES,
-                @"Hook_AntiDebugging" : @YES,
-                @"Hook_Syscall" : @YES,
-                @"Hook_LowLevelC" : @YES,
-                @"Hook_Sandbox" : @YES,
-                @"Hook_MachBootstrap" : @YES,
-                @"Hook_Memory" : @YES,
-                @"Hook_Foundation" : @NO,
-                @"Hook_ObjCRuntime" : @YES,
-                @"Hook_TweakClasses" : @YES,
-                @"Hook_FakeMac" : @NO,
+                @"HK_Library"  : @"fishhook",
+                // every Hook_* OFF intentionally
             };
         } else {
             // SMBC profile (working): aggressive hooks
