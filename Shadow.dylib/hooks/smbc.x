@@ -104,6 +104,51 @@ static void shadowhook_smbc_present_replacement(
     shadowhook_smbc_orig_present(self, _cmd, vc, animated, completion);
 }
 
+// ---------- (b2) -[UIViewController viewWillAppear:] backstop ----------
+//
+// UI Bank shows its JB-detection alert through a path that bypasses our
+// presentViewController:animated:completion: hook (UIBank_PRO syslog
+// 2026-04-29 16:38: alert reaches _willShowAlertController without our
+// present hook firing). Most likely the app uses UIAlertControllerStackManager
+// privately or attaches the alert to a UIWindow rootViewController directly.
+//
+// viewWillAppear: is the latest gate every UIViewController must pass before
+// its view is rendered, regardless of how it was queued for display. We
+// intercept here as a final backstop: if the controller is a UIAlertController
+// whose title/message contains a JB-detection needle, schedule a dismiss on
+// the next main-runloop tick so the alert never reaches the user.
+
+typedef void (*shadowhook_smbc_vwa_imp_t)(id self, SEL _cmd, BOOL animated);
+static shadowhook_smbc_vwa_imp_t shadowhook_smbc_orig_vwa = NULL;
+
+static void shadowhook_smbc_vwa_replacement(id self, SEL _cmd, BOOL animated) {
+    UIAlertController* alertSelf = nil;
+    BOOL shouldDismiss = NO;
+    if ([self isKindOfClass:[UIAlertController class]]) {
+        alertSelf = (UIAlertController*)self;
+        NSString* title = alertSelf.title;
+        NSString* message = alertSelf.message;
+        if (shadowhook_smbc_text_is_blocklisted(title) ||
+            shadowhook_smbc_text_is_blocklisted(message)) {
+            NSLog(@"[Shadow/SMBC] suppress alert at viewWillAppear: title=%@ message=%@",
+                  title, message);
+            shouldDismiss = YES;
+        }
+    }
+    // Always call original first to keep UIKit's bookkeeping intact.
+    shadowhook_smbc_orig_vwa(self, _cmd, animated);
+    if (shouldDismiss && alertSelf) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIViewController* presenting = alertSelf.presentingViewController;
+            if (presenting) {
+                [presenting dismissViewControllerAnimated:NO completion:nil];
+            } else {
+                [alertSelf dismissViewControllerAnimated:NO completion:nil];
+            }
+        });
+    }
+}
+
 void shadowhook_smbc_alerts(void) {
     {
         Class cls = [UIAlertController class];
@@ -125,6 +170,17 @@ void shadowhook_smbc_alerts(void) {
                 (shadowhook_smbc_present_imp_t)method_getImplementation(m);
             method_setImplementation(m, (IMP)shadowhook_smbc_present_replacement);
             NSLog(@"[Shadow/SMBC] hooked -presentViewController:animated:completion:");
+        }
+    }
+    {
+        Class cls = [UIViewController class];
+        SEL sel = @selector(viewWillAppear:);
+        Method m = class_getInstanceMethod(cls, sel);
+        if (m) {
+            shadowhook_smbc_orig_vwa =
+                (shadowhook_smbc_vwa_imp_t)method_getImplementation(m);
+            method_setImplementation(m, (IMP)shadowhook_smbc_vwa_replacement);
+            NSLog(@"[Shadow/SMBC] hooked -[UIViewController viewWillAppear:]");
         }
     }
 }
