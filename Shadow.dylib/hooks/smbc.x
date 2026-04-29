@@ -227,15 +227,23 @@ void shadowhook_smbc_terminators(HKSubstitutor* hooks) {
 // We try the hook in a polling loop because at %ctor-time the ObjC classes
 // from the main app binary may not be registered yet.
 
+// Replacement returns id (empty NSDictionary) instead of void so that callers
+// expecting a non-nil object reference get a usable empty container in x0
+// rather than whatever garbage register state happened to be left behind.
+// Without this, downstream Swift code in UIApplication delegate callbacks
+// passes the garbage to __CFDictionaryCreateGeneric which raises NSException
+// (observed in UIBank_PRO-2026-04-25-231009.ips, smbc17 on com.dnx.japan.ui.bank).
 static IMP shadowhook_uibank_orig_loadprofile = NULL;
-static void shadowhook_uibank_loadprofile_replacement(id self, SEL _cmd) {
-    NSLog(@"[Shadow/UIBank] NOP +[StockNewsdmManager loadProfileWithCache]");
+static id shadowhook_uibank_loadprofile_replacement(id self, SEL _cmd) {
+    NSLog(@"[Shadow/UIBank] NOP +[StockNewsdmManager loadProfileWithCache] -> @{}");
+    return @{};
 }
 
 static IMP shadowhook_uibank_orig_viewdidunload = NULL;
-static void shadowhook_uibank_viewdidunload_replacement(
+static id shadowhook_uibank_viewdidunload_replacement(
     id self, SEL _cmd, id arg1, id arg2) {
-    NSLog(@"[Shadow/UIBank] NOP -[UpdateMIssuesManager viewDidUnload:Loader2:]");
+    NSLog(@"[Shadow/UIBank] NOP -[UpdateMIssuesManager viewDidUnload:Loader2:] -> @{}");
+    return @{};
 }
 
 static IMP shadowhook_uibank_orig_jsalert = NULL;
