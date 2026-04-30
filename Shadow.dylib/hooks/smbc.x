@@ -899,7 +899,7 @@ static int shadowhook_smbc_jbcheck_returns_false(void) {
     );
 }
 
-static void shadowhook_smbc_install_jbcheck_hooks(void) {
+static void shadowhook_smbc_install_jbcheck_hooks(HKSubstitutor* hooks) {
     static const struct {
         const char* name_substr;
         uintptr_t offsets[2];
@@ -946,7 +946,7 @@ void shadowhook_smbc_terminators(HKSubstitutor* hooks) {
     // smbc47: hook the two Swift JB-detection functions in UIBank_PRO
     // before installing the exception swallowers — if the hooks succeed,
     // the swallowers should never need to fire.
-    shadowhook_smbc_install_jbcheck_hooks();
+    shadowhook_smbc_install_jbcheck_hooks(hooks);
 
     // smbc45: install NULL page first, before anything else can fault.
     shadowhook_smbc_install_null_page();
