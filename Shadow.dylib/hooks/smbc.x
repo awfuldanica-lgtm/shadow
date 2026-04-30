@@ -355,9 +355,12 @@ static void shadowhook_smbc_block_swift_fatal(void) {
 #define _XOPEN_SOURCE 700
 #include <signal.h>
 #include <sys/ucontext.h>
+#include <mach/mach.h>
+#include <mach/exception_types.h>
 #include <mach/arm/thread_state.h>
 #include <ptrauth.h>
 #include <string.h>
+#include <pthread.h>
 static void shadowhook_smbc_sigtrap_handler(int sig, siginfo_t* info, void* context) {
     void* faddr = info ? info->si_addr : NULL;
     NSLog(@"[Shadow/SMBC] caught sig=%d at %p — advancing PC", sig, faddr);
@@ -366,15 +369,114 @@ static void shadowhook_smbc_sigtrap_handler(int sig, siginfo_t* info, void* cont
     if (context) {
         ucontext_t* uc = (ucontext_t*)context;
         if (uc->uc_mcontext) {
-            // PC may be signed under arm64e PAC. Strip the auth, advance by
-            // BRK instruction size, re-sign as a function pointer so resume
-            // works on both arm64 and arm64e devices.
             uint64_t pc = (uint64_t)arm_thread_state64_get_pc(uc->uc_mcontext->__ss);
             arm_thread_state64_set_pc_fptr(uc->uc_mcontext->__ss,
                 (void(*)(void))(pc + 4));
         }
     }
 #endif
+}
+
+// Mach exception handler (smbc37): smbc36 confirmed SIGTRAP/SIGILL/SIGBUS
+// signal handler installs but never fires before the 1s post-splash kill.
+// On iOS, BRK traps go through the Mach exception path FIRST (task port,
+// then host port) before any signal is generated. If the app or one of its
+// frameworks installed its own EXC_BREAKPOINT handler that calls
+// task_terminate(), the signal layer never fires.
+//
+// Set the task's EXC_BREAKPOINT/EXC_BAD_INSTRUCTION/EXC_CRASH/EXC_GUARD
+// exception ports to one we own. shadow.dylib loads during dyld init so we
+// install before app code runs and our port wins. Server thread receives
+// the Mach message, uses thread_set_state to advance the trapping
+// thread's PC by 4 (size of arm64 BRK), replies KERN_SUCCESS so the kernel
+// resumes the thread instead of terminating the task.
+static mach_port_t shadowhook_smbc_exc_port = MACH_PORT_NULL;
+
+static void* shadowhook_smbc_exception_thread(void* arg) {
+    (void)arg;
+    while (1) {
+        struct __attribute__((packed)) {
+            mach_msg_header_t Head;
+            mach_msg_body_t body;
+            mach_msg_port_descriptor_t thread;
+            mach_msg_port_descriptor_t task;
+            NDR_record_t NDR;
+            exception_type_t exception;
+            mach_msg_type_number_t codeCnt;
+            int64_t code[2];
+            char trailer[64];
+        } msg;
+        kern_return_t r = mach_msg(&msg.Head, MACH_RCV_MSG, 0, sizeof(msg),
+            shadowhook_smbc_exc_port, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+        if (r != KERN_SUCCESS) continue;
+
+        smbc24_diag([NSString stringWithFormat:
+            @"FIRE: Mach exc=%d code0=0x%llx code1=0x%llx",
+            msg.exception, (long long)msg.code[0], (long long)msg.code[1]]);
+        NSLog(@"[Shadow/SMBC] caught Mach exc=%d code=0x%llx",
+              msg.exception, (long long)msg.code[0]);
+
+        // Advance trapping thread's PC by 4 bytes (size of arm64 BRK).
+        arm_thread_state64_t state;
+        mach_msg_type_number_t state_count = ARM_THREAD_STATE64_COUNT;
+        if (thread_get_state(msg.thread.name, ARM_THREAD_STATE64,
+                (thread_state_t)&state, &state_count) == KERN_SUCCESS) {
+            uint64_t pc = (uint64_t)arm_thread_state64_get_pc(state);
+            arm_thread_state64_set_pc_fptr(state, (void(*)(void))(pc + 4));
+            thread_set_state(msg.thread.name, ARM_THREAD_STATE64,
+                (thread_state_t)&state, state_count);
+        }
+
+        // Send a "handled" reply so the kernel resumes the thread.
+        struct __attribute__((packed)) {
+            mach_msg_header_t Head;
+            NDR_record_t NDR;
+            kern_return_t RetCode;
+        } reply;
+        reply.Head.msgh_bits = MACH_MSGH_BITS(
+            MACH_MSGH_BITS_REMOTE(msg.Head.msgh_bits), 0);
+        reply.Head.msgh_size = sizeof(reply);
+        reply.Head.msgh_remote_port = msg.Head.msgh_remote_port;
+        reply.Head.msgh_local_port = MACH_PORT_NULL;
+        reply.Head.msgh_id = msg.Head.msgh_id + 100;
+        reply.Head.msgh_voucher_port = 0;
+        reply.NDR = msg.NDR;
+        reply.RetCode = KERN_SUCCESS;
+        mach_msg(&reply.Head, MACH_SEND_MSG, sizeof(reply), 0, MACH_PORT_NULL,
+                 MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+
+        // Release ports we received.
+        mach_port_deallocate(mach_task_self(), msg.thread.name);
+        mach_port_deallocate(mach_task_self(), msg.task.name);
+    }
+    return NULL;
+}
+
+static void shadowhook_smbc_install_mach_exc_handler(void) {
+    if (mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE,
+            &shadowhook_smbc_exc_port) != KERN_SUCCESS) {
+        smbc24_diag(@"INSTALL: Mach exc port allocate FAILED");
+        return;
+    }
+    if (mach_port_insert_right(mach_task_self(), shadowhook_smbc_exc_port,
+            shadowhook_smbc_exc_port, MACH_MSG_TYPE_MAKE_SEND) != KERN_SUCCESS) {
+        smbc24_diag(@"INSTALL: Mach exc insert_right FAILED");
+        return;
+    }
+    if (task_set_exception_ports(mach_task_self(),
+            EXC_MASK_BREAKPOINT | EXC_MASK_BAD_INSTRUCTION | EXC_MASK_CRASH | EXC_MASK_GUARD,
+            shadowhook_smbc_exc_port,
+            EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES,
+            ARM_THREAD_STATE64) != KERN_SUCCESS) {
+        smbc24_diag(@"INSTALL: task_set_exception_ports FAILED");
+        return;
+    }
+    pthread_t t;
+    pthread_create(&t, NULL, shadowhook_smbc_exception_thread, NULL);
+    pthread_detach(t);
+    smbc24_diag(@"INSTALL: Mach exc handler (BRK/BAD_INSTR/CRASH/GUARD)");
+    NSLog(@"[Shadow/SMBC] Mach exception handler installed on port %u",
+          shadowhook_smbc_exc_port);
 }
 
 // +[NSException raise:format:] — variadic, matched by ObjC selector
@@ -458,8 +560,10 @@ void shadowhook_smbc_terminators(HKSubstitutor* hooks) {
         }
     }
 
-    // SIGTRAP/SIGILL/SIGBUS handler (smbc36) — catch direct BRK traps that
-    // bypass swift_runtime_on_report/Fatal symbol hooks.
+    // SIGTRAP/SIGILL/SIGBUS handler (smbc36) — kept as fallback after the
+    // Mach exception handler. If anything bypasses Mach (e.g. host-level
+    // exception was claimed by something else), the signal layer is the
+    // last line.
     {
         struct sigaction sa = {0};
         sa.sa_sigaction = shadowhook_smbc_sigtrap_handler;
@@ -471,6 +575,9 @@ void shadowhook_smbc_terminators(HKSubstitutor* hooks) {
         NSLog(@"[Shadow/SMBC] installed SIGTRAP/SIGILL/SIGBUS handler");
         smbc24_diag(@"INSTALL: SIGTRAP/SIGILL/SIGBUS handler");
     }
+
+    // Mach exception handler (smbc37) — catches BRK before signal layer.
+    shadowhook_smbc_install_mach_exc_handler();
 
     NSLog(@"[Shadow/SMBC] terminator chain blocked");
 }
