@@ -891,20 +891,28 @@ static void shadowhook_smbc_install_null_page(void) {
 // the Swift inits populate their Optional<T>s correctly — no nil
 // force-unwrap, no exceptions, no state corruption.
 
-// smbc51/52: per-hook trace counters. Limit each hook to N "trace every
-// call" entries during startup so we can see what UI Bank actually
-// queries without flooding. After the limit, only "we lied" entries
-// are kept.
+// smbc51/52/53: per-hook trace counters with a path filter that skips
+// any access touching our own diag log file. The __thread guard from
+// smbc52 wasn't enough — NSFileHandle writes go through a Foundation
+// dispatch queue running on a different thread, so the guard didn't
+// transfer and we still saw recursive log entries (~200 deep). Plus
+// concurrent writes from multiple worker threads got their bytes
+// interleaved at the file level, producing pages of base64-looking
+// gibberish in the log.
 //
-// smbc52 adds a thread-local re-entry guard. Without it, our trace path
-// (which writes a log line via NSFileHandle and calls fileExistsAtPath:
-// + open + ... internally) itself triggers our hooks and recurses
-// 200 deep until the per-counter cap stops it — flooding the log with
-// duplicates of our own diag path. The guard makes a hook call that
-// is INSIDE another hook just pass through to the original silently.
+// Use a path-string filter instead — every path-based hook checks
+// whether the path is our diag log and bails out before trace+lie if
+// so. This is reliable across threads since it doesn't rely on TLS.
 #include <stdatomic.h>
 #define SMBC_TRACE_LIMIT 200
 static __thread int shadowhook_smbc_in_hook = 0;
+
+// True when the path is one we generate from inside smbc24_diag — must
+// pass through silently or we will log our own writes (and possibly
+// race with concurrent diag writes).
+static BOOL shadowhook_smbc_path_is_diag(const char* p) {
+    return p && strstr(p, "shadow_smbc24.log") != NULL;
+}
 static atomic_int shadowhook_smbc_trace_n_sysctlbyname = 0;
 static atomic_int shadowhook_smbc_trace_n_sysctl = 0;
 static atomic_int shadowhook_smbc_trace_n_access = 0;
@@ -1038,6 +1046,8 @@ static BOOL shadowhook_smbc_path_looks_jb(const char* p) {
 
 static int (*shadowhook_smbc_orig_access)(const char*, int) = NULL;
 static int shadowhook_smbc_block_access(const char* path, int amode) {
+    if (shadowhook_smbc_path_is_diag(path))
+        return shadowhook_smbc_orig_access(path, amode);
     SMBC_TRACE(shadowhook_smbc_trace_n_access,
         @"trace: access(%s,%d)", path ?: "(null)", amode);
     if (shadowhook_smbc_path_looks_jb(path)) {
@@ -1051,6 +1061,8 @@ static int shadowhook_smbc_block_access(const char* path, int amode) {
 
 static int (*shadowhook_smbc_orig_stat)(const char*, struct stat*) = NULL;
 static int shadowhook_smbc_block_stat(const char* path, struct stat* buf) {
+    if (shadowhook_smbc_path_is_diag(path))
+        return shadowhook_smbc_orig_stat(path, buf);
     SMBC_TRACE(shadowhook_smbc_trace_n_stat,
         @"trace: stat(%s)", path ?: "(null)");
     if (shadowhook_smbc_path_looks_jb(path)) {
@@ -1064,6 +1076,8 @@ static int shadowhook_smbc_block_stat(const char* path, struct stat* buf) {
 
 static int (*shadowhook_smbc_orig_lstat)(const char*, struct stat*) = NULL;
 static int shadowhook_smbc_block_lstat(const char* path, struct stat* buf) {
+    if (shadowhook_smbc_path_is_diag(path))
+        return shadowhook_smbc_orig_lstat(path, buf);
     SMBC_TRACE(shadowhook_smbc_trace_n_lstat,
         @"trace: lstat(%s)", path ?: "(null)");
     if (shadowhook_smbc_path_looks_jb(path)) {
@@ -1077,6 +1091,13 @@ static int shadowhook_smbc_block_lstat(const char* path, struct stat* buf) {
 
 static int (*shadowhook_smbc_orig_open)(const char*, int, ...) = NULL;
 static int shadowhook_smbc_block_open(const char* path, int oflag, ...) {
+    if (shadowhook_smbc_path_is_diag(path)) {
+        mode_t mode = 0;
+        if (oflag & 0x200) {
+            va_list ap; va_start(ap, oflag); mode = va_arg(ap, int); va_end(ap);
+        }
+        return shadowhook_smbc_orig_open(path, oflag, mode);
+    }
     SMBC_TRACE(shadowhook_smbc_trace_n_open,
         @"trace: open(%s,0x%x)", path ?: "(null)", oflag);
     if (shadowhook_smbc_path_looks_jb(path)) {
@@ -1094,6 +1115,8 @@ static int shadowhook_smbc_block_open(const char* path, int oflag, ...) {
 
 static FILE* (*shadowhook_smbc_orig_fopen)(const char*, const char*) = NULL;
 static FILE* shadowhook_smbc_block_fopen(const char* path, const char* mode) {
+    if (shadowhook_smbc_path_is_diag(path))
+        return shadowhook_smbc_orig_fopen(path, mode);
     SMBC_TRACE(shadowhook_smbc_trace_n_fopen,
         @"trace: fopen(%s,%s)", path ?: "(null)", mode ?: "(null)");
     if (shadowhook_smbc_path_looks_jb(path)) {
@@ -1186,6 +1209,8 @@ static shadowhook_smbc_fexists_imp_t shadowhook_smbc_orig_fexists = NULL;
 static BOOL shadowhook_smbc_block_fexists(id self, SEL _cmd, NSString* path) {
     if (path) {
         const char* cpath = [path UTF8String];
+        if (shadowhook_smbc_path_is_diag(cpath))
+            return shadowhook_smbc_orig_fexists(self, _cmd, path);
         SMBC_TRACE(shadowhook_smbc_trace_n_fexists,
             @"trace: fileExistsAtPath(%s)", cpath ?: "(null)");
         if (shadowhook_smbc_path_looks_jb(cpath)) {
@@ -1203,6 +1228,8 @@ static shadowhook_smbc_fexists_isdir_imp_t shadowhook_smbc_orig_fexists_isdir = 
 static BOOL shadowhook_smbc_block_fexists_isdir(id self, SEL _cmd, NSString* path, BOOL* isDir) {
     if (path) {
         const char* cpath = [path UTF8String];
+        if (shadowhook_smbc_path_is_diag(cpath))
+            return shadowhook_smbc_orig_fexists_isdir(self, _cmd, path, isDir);
         SMBC_TRACE(shadowhook_smbc_trace_n_fexists,
             @"trace: fileExistsAtPath:isDir(%s)", cpath ?: "(null)");
         if (shadowhook_smbc_path_looks_jb(cpath)) {
