@@ -37,37 +37,50 @@
 //   cat <found path>
 
 void smbc24_diag(NSString* event) {
-    // smbc55: serialize all log writes globally. Without this, multiple
-    // app threads calling our hooks concurrently each open the log file
-    // and writeData at end-of-file. seekToEndOfFile + writeData is not
-    // atomic, so when two threads interleave their writes the bytes get
-    // shuffled at the file level — pages of base64-looking gibberish
-    // appear in the log instead of clean trace lines.
-    static NSObject* lock = nil;
-    static dispatch_once_t lock_once = 0;
-    dispatch_once(&lock_once, ^{ lock = [NSObject new]; });
-    @synchronized(lock) {
-        @try {
-            static NSString* path = nil;
-            static dispatch_once_t once = 0;
-            dispatch_once(&once, ^{
-                NSArray* dirs = NSSearchPathForDirectoriesInDomains(
-                    NSDocumentDirectory, NSUserDomainMask, YES);
-                if (dirs.count == 0) return;
-                path = [[dirs firstObject] stringByAppendingPathComponent:@"shadow_smbc24.log"];
-                [[NSString stringWithFormat:@"=== smbc24 session %@ ===\n", [NSDate date]]
-                    writeToFile:path atomically:NO encoding:NSUTF8StringEncoding error:nil];
-            });
-            if (!path) return;
-            NSString* line = [NSString stringWithFormat:@"%@ %@\n", [NSDate date], event];
-            NSFileHandle* fh = [NSFileHandle fileHandleForWritingAtPath:path];
-            if (fh) {
-                [fh seekToEndOfFile];
-                [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-                [fh closeFile];
-            }
-        } @catch (id ex) {}
-    }
+    // smbc56: serialize with pthread_mutex (recursive). The smbc55
+    // attempt with @synchronized(NSObject) didn't actually serialize
+    // concurrent writes (maybe because of logos preprocessing or some
+    // ARC thing — same gibberish appeared on a fresh log file). Using
+    // a static recursive mutex initialized at first call.
+    //
+    // PTHREAD_MUTEX_RECURSIVE: if our path-filter ever fails and the
+    // diag write recurses into itself on the SAME thread, we don't
+    // deadlock — we just take the lock again. Cross-thread is still
+    // serialized correctly.
+    static pthread_mutex_t lock;
+    static pthread_once_t lock_once = PTHREAD_ONCE_INIT;
+    pthread_once(&lock_once, ^{
+        pthread_mutexattr_t a;
+        pthread_mutexattr_init(&a);
+        pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
+        pthread_mutex_init(&lock, &a);
+        pthread_mutexattr_destroy(&a);
+    });
+    pthread_mutex_lock(&lock);
+    @try {
+        static NSString* path = nil;
+        static dispatch_once_t once = 0;
+        dispatch_once(&once, ^{
+            NSArray* dirs = NSSearchPathForDirectoriesInDomains(
+                NSDocumentDirectory, NSUserDomainMask, YES);
+            if (dirs.count == 0) return;
+            path = [[dirs firstObject] stringByAppendingPathComponent:@"shadow_smbc24.log"];
+            [[NSString stringWithFormat:@"=== smbc24 session %@ ===\n", [NSDate date]]
+                writeToFile:path atomically:NO encoding:NSUTF8StringEncoding error:nil];
+        });
+        if (!path) {
+            pthread_mutex_unlock(&lock);
+            return;
+        }
+        NSString* line = [NSString stringWithFormat:@"%@ %@\n", [NSDate date], event];
+        NSFileHandle* fh = [NSFileHandle fileHandleForWritingAtPath:path];
+        if (fh) {
+            [fh seekToEndOfFile];
+            [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+            [fh closeFile];
+        }
+    } @catch (id ex) {}
+    pthread_mutex_unlock(&lock);
 }
 
 // ---------- needles ----------
