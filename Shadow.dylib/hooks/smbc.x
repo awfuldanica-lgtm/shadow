@@ -385,6 +385,37 @@ static kern_return_t shadowhook_smbc_block_task_terminate(mach_port_t target) {
     return shadowhook_smbc_orig_task_terminate(target);
 }
 
+// smbc39: raw libsystem_kernel syscall wrappers. The libc termination
+// functions (exit/_exit/abort/kill/pthread_kill) we hook are user-mode
+// wrappers that ultimately call into libsystem_kernel.dylib's __exit /
+// __pthread_kill / __kill. Code paths that link those kernel-level
+// wrappers directly (or hand-write the syscall in inline asm) bypass
+// our libc hooks. Hook them at libsystem_kernel level too. Note: if the
+// binary inlines `mov x16, #1; svc 0`, we still can't catch that — that
+// would require __text scanning + patching.
+static void (*shadowhook_smbc_orig_kern_exit)(int) = NULL;
+static void shadowhook_smbc_block_kern_exit(int status) {
+    SMBC_DIAG_DYING(@"__exit(%d) [libsystem_kernel]", status);
+    NSLog(@"[Shadow/SMBC] blocked __exit(%d)", status);
+}
+
+static int (*shadowhook_smbc_orig_kern_kill)(pid_t, int, int) = NULL;
+static int shadowhook_smbc_block_kern_kill(pid_t pid, int sig, int posix) {
+    if (sig == 0) {
+        return shadowhook_smbc_orig_kern_kill(pid, sig, posix);
+    }
+    SMBC_DIAG_DYING(@"__kill(pid=%d,sig=%d) [libsystem_kernel]", pid, sig);
+    NSLog(@"[Shadow/SMBC] blocked __kill(%d,%d)", pid, sig);
+    return 0;
+}
+
+static int (*shadowhook_smbc_orig_kern_pthread_kill)(mach_port_t, int) = NULL;
+static int shadowhook_smbc_block_kern_pthread_kill(mach_port_t thread_port, int sig) {
+    SMBC_DIAG_DYING(@"__pthread_kill(sig=%d) [libsystem_kernel]", sig);
+    NSLog(@"[Shadow/SMBC] blocked __pthread_kill(%d)", sig);
+    return 0;
+}
+
 // posix_spawn / execve — used to re-exec self for "kill via replacement"
 // pattern. Log and let through (we may need exec for legitimate cases).
 static int (*shadowhook_smbc_orig_posix_spawn)(
@@ -712,6 +743,31 @@ void shadowhook_smbc_terminators(HKSubstitutor* hooks) {
             MSHookFunction(sym, (void*)shadowhook_smbc_block_posix_spawn,
                            (void**)&shadowhook_smbc_orig_posix_spawn);
             smbc24_diag(@"INSTALL: posix_spawn");
+        }
+    }
+
+    // smbc39: hook libsystem_kernel raw syscall wrappers. Code paths that
+    // call directly into __exit / __kill / __pthread_kill (the kernel-side
+    // wrappers, not the libc wrappers we already hook) skip every libc
+    // hook above. Different addresses than libc symbols of similar name.
+    {
+        void* sym = dlsym(RTLD_DEFAULT, "__exit");
+        if (sym && sym != (void*)_exit) {
+            MSHookFunction(sym, (void*)shadowhook_smbc_block_kern_exit,
+                           (void**)&shadowhook_smbc_orig_kern_exit);
+            smbc24_diag(@"INSTALL: __exit [libsystem_kernel]");
+        }
+        sym = dlsym(RTLD_DEFAULT, "__kill");
+        if (sym && sym != (void*)kill) {
+            MSHookFunction(sym, (void*)shadowhook_smbc_block_kern_kill,
+                           (void**)&shadowhook_smbc_orig_kern_kill);
+            smbc24_diag(@"INSTALL: __kill [libsystem_kernel]");
+        }
+        sym = dlsym(RTLD_DEFAULT, "__pthread_kill");
+        if (sym && sym != (void*)pthread_kill) {
+            MSHookFunction(sym, (void*)shadowhook_smbc_block_kern_pthread_kill,
+                           (void**)&shadowhook_smbc_orig_kern_pthread_kill);
+            smbc24_diag(@"INSTALL: __pthread_kill [libsystem_kernel]");
         }
     }
 
