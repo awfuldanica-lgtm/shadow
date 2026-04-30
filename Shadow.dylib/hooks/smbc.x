@@ -283,23 +283,34 @@ void shadowhook_smbc_alerts(void) {
 
 // ---------- (c) terminator blocks ----------
 
+// smbc38: log via smbc24_diag (NSLog never shows up in the device syslog),
+// include __builtin_return_address(0) so we can map the caller's PC back to
+// a symbol with `atos -l <slide> -o <bin>` later.
+#define SMBC_DIAG_DYING(fmt, ...) \
+    smbc24_diag([NSString stringWithFormat:(@"FIRE: dying via " fmt @" from %p"), \
+                 ##__VA_ARGS__, __builtin_return_address(0)])
+
 static void (*shadowhook_smbc_orig_exit)(int) = NULL;
 static void shadowhook_smbc_block_exit(int status) {
+    SMBC_DIAG_DYING(@"exit(%d)", status);
     NSLog(@"[Shadow/SMBC] blocked exit(%d)", status);
 }
 
 static void (*shadowhook_smbc_orig__exit)(int) = NULL;
 static void shadowhook_smbc_block__exit(int status) {
+    SMBC_DIAG_DYING(@"_exit(%d)", status);
     NSLog(@"[Shadow/SMBC] blocked _exit(%d)", status);
 }
 
 static void (*shadowhook_smbc_orig_abort)(void) = NULL;
 static void shadowhook_smbc_block_abort(void) {
+    SMBC_DIAG_DYING(@"abort()");
     NSLog(@"[Shadow/SMBC] blocked abort");
 }
 
 static int (*shadowhook_smbc_orig_raise)(int) = NULL;
 static int shadowhook_smbc_block_raise(int sig) {
+    SMBC_DIAG_DYING(@"raise(%d)", sig);
     NSLog(@"[Shadow/SMBC] blocked raise(%d)", sig);
     return 0;
 }
@@ -310,12 +321,14 @@ static int shadowhook_smbc_block_kill(pid_t pid, int sig) {
         // probe call (existence check) — let it through
         return shadowhook_smbc_orig_kill(pid, sig);
     }
+    SMBC_DIAG_DYING(@"kill(pid=%d,sig=%d)", pid, sig);
     NSLog(@"[Shadow/SMBC] blocked kill(%d,%d)", pid, sig);
     return 0;
 }
 
 static int (*shadowhook_smbc_orig_pthread_kill)(pthread_t, int) = NULL;
 static int shadowhook_smbc_block_pthread_kill(pthread_t t, int sig) {
+    SMBC_DIAG_DYING(@"pthread_kill(sig=%d)", sig);
     NSLog(@"[Shadow/SMBC] blocked pthread_kill(%d)", sig);
     return 0;
 }
@@ -324,7 +337,93 @@ static int shadowhook_smbc_block_pthread_kill(pthread_t t, int sig) {
 // Resolve at runtime via dlsym so we don't drag a hard link dependency.
 static void (*shadowhook_smbc_orig_cxa_throw)(void*, void*, void (*)(void*)) = NULL;
 static void shadowhook_smbc_block_cxa_throw(void* a, void* b, void (*c)(void*)) {
+    SMBC_DIAG_DYING(@"__cxa_throw");
     NSLog(@"[Shadow/SMBC] blocked __cxa_throw");
+}
+
+// smbc38: additional kernel-direct termination paths that bypass libc.
+// abort_with_reason / abort_with_payload — newer __noreturn aborts that
+// don't go through abort() and therefore aren't caught by the abort hook.
+// Used by frameworks that want to attach a reason code visible in the
+// crash report. Signature matches <sys/reason.h>:
+//   void abort_with_reason(uint32_t namespace, uint64_t code,
+//                          const char *reason, uint64_t flags) __dead2;
+//   void abort_with_payload(uint32_t namespace, uint64_t code,
+//                           void *payload, uint32_t payload_size,
+//                           const char *reason, uint64_t flags) __dead2;
+static void (*shadowhook_smbc_orig_abort_with_reason)(
+    uint32_t, uint64_t, const char*, uint64_t) = NULL;
+static void shadowhook_smbc_block_abort_with_reason(
+    uint32_t ns, uint64_t code, const char* reason, uint64_t flags) {
+    SMBC_DIAG_DYING(@"abort_with_reason ns=%u code=0x%llx reason=%s",
+                    ns, (long long)code, reason ? reason : "(null)");
+    NSLog(@"[Shadow/SMBC] blocked abort_with_reason ns=%u code=0x%llx reason=%s",
+          ns, (long long)code, reason ?: "(null)");
+}
+
+static void (*shadowhook_smbc_orig_abort_with_payload)(
+    uint32_t, uint64_t, void*, uint32_t, const char*, uint64_t) = NULL;
+static void shadowhook_smbc_block_abort_with_payload(
+    uint32_t ns, uint64_t code, void* payload, uint32_t payload_size,
+    const char* reason, uint64_t flags) {
+    SMBC_DIAG_DYING(@"abort_with_payload ns=%u code=0x%llx reason=%s",
+                    ns, (long long)code, reason ? reason : "(null)");
+    NSLog(@"[Shadow/SMBC] blocked abort_with_payload ns=%u code=0x%llx reason=%s",
+          ns, (long long)code, reason ?: "(null)");
+}
+
+// task_terminate / task_terminate_internal — Mach-level terminate that does
+// not go through any signal/exception layer. If the app calls
+// task_terminate(mach_task_self()) directly the kernel just kills us.
+static kern_return_t (*shadowhook_smbc_orig_task_terminate)(mach_port_t) = NULL;
+static kern_return_t shadowhook_smbc_block_task_terminate(mach_port_t target) {
+    if (target == mach_task_self()) {
+        SMBC_DIAG_DYING(@"task_terminate(self)");
+        NSLog(@"[Shadow/SMBC] blocked task_terminate(self)");
+        return KERN_SUCCESS;
+    }
+    return shadowhook_smbc_orig_task_terminate(target);
+}
+
+// posix_spawn / execve — used to re-exec self for "kill via replacement"
+// pattern. Log and let through (we may need exec for legitimate cases).
+static int (*shadowhook_smbc_orig_posix_spawn)(
+    pid_t*, const char*, const void*, const void*,
+    char* const[], char* const[]) = NULL;
+static int shadowhook_smbc_block_posix_spawn(
+    pid_t* pid, const char* path, const void* file_actions,
+    const void* attrp, char* const argv[], char* const envp[]) {
+    smbc24_diag([NSString stringWithFormat:
+        @"FIRE: posix_spawn path=%s", path ?: "(null)"]);
+    return shadowhook_smbc_orig_posix_spawn(pid, path, file_actions, attrp,
+                                             argv, envp);
+}
+
+// SIGABRT/SIGSEGV/SIGTERM/SIGPIPE catcher for visibility — purely diagnostic,
+// reraise after logging so we don't paper over real crashes here.
+static void shadowhook_smbc_sigterm_diag(int sig, siginfo_t* info, void* ctx) {
+    smbc24_diag([NSString stringWithFormat:
+        @"FIRE: signal %d si_code=%d si_addr=%p",
+        sig, info ? info->si_code : 0, info ? info->si_addr : NULL]);
+    // Restore default and re-raise so the original behavior happens — this
+    // is diagnostic only; we just want to know which signal arrived.
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+// atexit hook — fires on normal-ish exit paths (exit() — not _exit).
+// If this fires we know exit() was reached by some path that bypassed our
+// libc.exit hook (e.g. a static-linked exit, or a vector we didn't cover).
+static void shadowhook_smbc_atexit_log(void) {
+    smbc24_diag(@"FIRE: atexit reached (process exiting normally)");
+}
+
+// NSUncaughtException handler — function pointer (NSSetUncaughtExceptionHandler
+// takes a C func, not a block).
+static void shadowhook_smbc_uncaught_exc(NSException* e) {
+    smbc24_diag([NSString stringWithFormat:
+        @"FIRE: NSUncaughtException name=%@ reason=%@",
+        e.name, e.reason]);
 }
 
 // Swift fatal-error block (smbc35). All Swift runtime "report fatal error"
@@ -587,6 +686,62 @@ void shadowhook_smbc_terminators(HKSubstitutor* hooks) {
 
     // Mach exception handler (smbc37) — catches BRK before signal layer.
     shadowhook_smbc_install_mach_exc_handler();
+
+    // smbc38: extra termination paths that bypassed every previous hook.
+    {
+        void* sym = dlsym(RTLD_DEFAULT, "abort_with_reason");
+        if (sym) {
+            MSHookFunction(sym, (void*)shadowhook_smbc_block_abort_with_reason,
+                           (void**)&shadowhook_smbc_orig_abort_with_reason);
+            smbc24_diag(@"INSTALL: abort_with_reason");
+        }
+        sym = dlsym(RTLD_DEFAULT, "abort_with_payload");
+        if (sym) {
+            MSHookFunction(sym, (void*)shadowhook_smbc_block_abort_with_payload,
+                           (void**)&shadowhook_smbc_orig_abort_with_payload);
+            smbc24_diag(@"INSTALL: abort_with_payload");
+        }
+        sym = dlsym(RTLD_DEFAULT, "task_terminate");
+        if (sym) {
+            MSHookFunction(sym, (void*)shadowhook_smbc_block_task_terminate,
+                           (void**)&shadowhook_smbc_orig_task_terminate);
+            smbc24_diag(@"INSTALL: task_terminate");
+        }
+        sym = dlsym(RTLD_DEFAULT, "posix_spawn");
+        if (sym) {
+            MSHookFunction(sym, (void*)shadowhook_smbc_block_posix_spawn,
+                           (void**)&shadowhook_smbc_orig_posix_spawn);
+            smbc24_diag(@"INSTALL: posix_spawn");
+        }
+    }
+
+    // smbc38: diagnostic-only signal handlers for SIGABRT/SIGSEGV/SIGTERM/
+    // SIGPIPE — log which signal arrives then re-raise to default to keep
+    // crash report intact.
+    {
+        struct sigaction sa = {0};
+        sa.sa_sigaction = shadowhook_smbc_sigterm_diag;
+        sa.sa_flags = SA_SIGINFO | SA_NODEFER | SA_RESETHAND;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGABRT, &sa, NULL);
+        sigaction(SIGSEGV, &sa, NULL);
+        sigaction(SIGTERM, &sa, NULL);
+        sigaction(SIGPIPE, &sa, NULL);
+        sigaction(SIGSYS, &sa, NULL);
+        smbc24_diag(@"INSTALL: SIGABRT/SIGSEGV/SIGTERM/SIGPIPE/SIGSYS diag");
+    }
+
+    // smbc38: atexit fires before normal exit. If FIRE: atexit shows up,
+    // exit() reached on a code path that wasn't caught by our libc.exit
+    // hook (statically-linked exit somewhere, alternate entry, etc.).
+    atexit(shadowhook_smbc_atexit_log);
+    smbc24_diag(@"INSTALL: atexit logger");
+
+    // smbc38: NSUncaughtException handler — fires for any ObjC exception
+    // that escapes all @catch blocks before the runtime calls
+    // _objc_terminate -> abort.
+    NSSetUncaughtExceptionHandler(&shadowhook_smbc_uncaught_exc);
+    smbc24_diag(@"INSTALL: NSUncaughtExceptionHandler");
 
     NSLog(@"[Shadow/SMBC] terminator chain blocked");
 }
