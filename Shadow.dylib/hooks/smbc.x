@@ -86,6 +86,37 @@ static BOOL shadowhook_smbc_text_is_blocklisted(NSString* s) {
     return NO;
 }
 
+// smbc42: obfuscated-string detector. UI Bank's JB warning alert (smbc41 log)
+// shows title="tLTTQUXUc" and message starting with random base64-ish text
+// like "4GLUyjCNZxwDL643FL6MvyE4A/wXwT". These look like WMatrix string-table
+// lookup keys that did not get resolved, so the raw key leaks into the UI.
+// Real, user-facing alert titles either contain whitespace, Japanese/Korean
+// characters, or recognizable English words. A short ASCII-only token with
+// no whitespace and length 5..30 is almost always an obfuscated key.
+static BOOL shadowhook_smbc_text_looks_obfuscated(NSString* s) {
+    if (!s) return NO;
+    NSUInteger len = [s length];
+    if (len < 5 || len > 30) return NO;
+    NSCharacterSet* allowed = [NSCharacterSet characterSetWithCharactersInString:
+        @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/="];
+    NSCharacterSet* notAllowed = [allowed invertedSet];
+    // Disqualify if any char is outside the alphanumeric/base64 set
+    // (this excludes whitespace, punctuation, CJK, accented letters).
+    if ([s rangeOfCharacterFromSet:notAllowed].location != NSNotFound) return NO;
+    // Require both letters and at least one of mixed case OR a digit, so we
+    // do not flag short all-lowercase common words like "login" or "error".
+    BOOL hasUpper = [s rangeOfCharacterFromSet:[NSCharacterSet uppercaseLetterCharacterSet]].location != NSNotFound;
+    BOOL hasLower = [s rangeOfCharacterFromSet:[NSCharacterSet lowercaseLetterCharacterSet]].location != NSNotFound;
+    BOOL hasDigit = [s rangeOfCharacterFromSet:[NSCharacterSet decimalDigitCharacterSet]].location != NSNotFound;
+    if (!(hasUpper && hasLower)) return hasDigit && (hasUpper || hasLower);
+    return YES;  // mixed case alphanumeric without spaces — looks obfuscated
+}
+
+static BOOL shadowhook_smbc_alert_text_should_block(NSString* s) {
+    return shadowhook_smbc_text_is_blocklisted(s)
+        || shadowhook_smbc_text_looks_obfuscated(s);
+}
+
 // ---------- (a) UIAlertController.alertControllerWithTitle:message:preferredStyle: ----------
 
 typedef UIAlertController* (*shadowhook_smbc_alert_imp_t)(
@@ -96,8 +127,8 @@ static UIAlertController* shadowhook_smbc_alert_replacement(
     Class self, SEL _cmd, NSString* title, NSString* message, UIAlertControllerStyle style) {
     smbc24_diag([NSString stringWithFormat:@"FIRE: +alertControllerWithTitle: title=%@ message=%@",
                  title ?: @"(nil)", message ?: @"(nil)"]);
-    if (shadowhook_smbc_text_is_blocklisted(title) ||
-        shadowhook_smbc_text_is_blocklisted(message)) {
+    if (shadowhook_smbc_alert_text_should_block(title) ||
+        shadowhook_smbc_alert_text_should_block(message)) {
         NSLog(@"[Shadow/SMBC] suppress alert: title=%@ message=%@", title, message);
         return nil;
     }
@@ -207,8 +238,8 @@ static void shadowhook_smbc_alert_vwa_replacement(id self, SEL _cmd, BOOL animat
     NSString* message = alert.message;
     smbc24_diag([NSString stringWithFormat:@"FIRE: UIAlertController.viewWillAppear: title=%@",
                  title ?: @"(nil)"]);
-    BOOL hit = (shadowhook_smbc_text_is_blocklisted(title) ||
-                shadowhook_smbc_text_is_blocklisted(message));
+    BOOL hit = (shadowhook_smbc_alert_text_should_block(title) ||
+                shadowhook_smbc_alert_text_should_block(message));
     shadowhook_smbc_orig_alert_vwa(self, _cmd, animated);
     if (hit) {
         NSLog(@"[Shadow/SMBC] suppress alert at -[UIAlertController viewWillAppear:]: title=%@ message=%@",
