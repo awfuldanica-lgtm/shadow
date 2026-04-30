@@ -613,19 +613,43 @@ static void* shadowhook_smbc_exception_thread(void* arg) {
                 || (msg.exception == EXC_BAD_ACCESS
                     && (uint64_t)msg.code[1] < 0x10000);
             if (should_pop && fp >= 0x10000 && (fp & 0x7) == 0) {
-                uint64_t saved_x29 = ((uint64_t*)fp)[0];
-                uint64_t saved_x30_signed = ((uint64_t*)fp)[1];
-                void* stripped = ptrauth_strip((void*)saved_x30_signed,
-                    ptrauth_key_function_pointer);
+                // smbc46: pop multiple frames in a single exception
+                // until we exit the dyld shared cache (>= 0x180000000)
+                // back into app text or library text the user controls.
+                // The shared-cache callers all dereference the same nil
+                // ivar, so popping just 1 frame leaves us in another
+                // system function with the same corrupted state — a
+                // 2-address ping-pong as observed in smbc44 logs. Bound
+                // the loop to 8 pops as a safety net.
+                uint64_t cur_fp = fp;
+                uint64_t saved_x29 = 0;
+                uint64_t ret_addr = 0;
+                int pops = 0;
+                for (pops = 0; pops < 8; pops++) {
+                    if (cur_fp < 0x10000 || (cur_fp & 0x7) != 0) break;
+                    saved_x29 = ((uint64_t*)cur_fp)[0];
+                    uint64_t saved_x30_signed = ((uint64_t*)cur_fp)[1];
+                    void* stripped = ptrauth_strip(
+                        (void*)saved_x30_signed,
+                        ptrauth_key_function_pointer);
+                    ret_addr = (uint64_t)stripped;
+                    if (ret_addr < 0x10000) break;  // bad ret, stop
+                    // If ret is outside the shared-cache region, accept
+                    // this frame and stop popping.
+                    if (ret_addr < 0x180000000ULL) break;
+                    // Otherwise advance up one more frame.
+                    cur_fp = saved_x29;
+                }
                 smbc24_diag([NSString stringWithFormat:
-                    @"smbc44 pop: pc=0x%llx fp=0x%llx -> ret=0x%llx",
-                    pc, fp, (long long)(uintptr_t)stripped]);
+                    @"smbc46 pop x%d: pc=0x%llx fp=0x%llx -> ret=0x%llx fp_new=0x%llx",
+                    pops + 1, pc, fp,
+                    (long long)ret_addr, (long long)saved_x29]);
                 arm_thread_state64_set_fp(state, saved_x29);
-                arm_thread_state64_set_sp(state, fp + 16);
+                arm_thread_state64_set_sp(state, cur_fp + 16);
                 arm_thread_state64_set_pc_fptr(state,
-                    (void(*)(void))stripped);
+                    (void(*)(void))ret_addr);
                 arm_thread_state64_set_lr_fptr(state,
-                    (void(*)(void))stripped);
+                    (void(*)(void))ret_addr);
             } else {
                 arm_thread_state64_set_pc_fptr(state,
                     (void(*)(void))(pc + 4));
