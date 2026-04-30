@@ -36,27 +36,24 @@
 //   sudo find /var/mobile/Containers/Data/Application -name "shadow_smbc24.log"
 //   cat <found path>
 
+// smbc56: recursive pthread_mutex for diag-write serialization. Initialized
+// at dylib load via __attribute__((constructor)) so it is ready before any
+// smbc24_diag call. Recursive so a same-thread re-entry (if our path filter
+// ever leaks) doesn't deadlock; cross-thread is still serialized correctly.
+static pthread_mutex_t shadowhook_smbc_diag_lock;
+
+__attribute__((constructor))
+static void shadowhook_smbc_diag_lock_init(void) {
+    pthread_mutexattr_t a;
+    pthread_mutexattr_init(&a);
+    pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&shadowhook_smbc_diag_lock, &a);
+    pthread_mutexattr_destroy(&a);
+}
+
 void smbc24_diag(NSString* event) {
-    // smbc56: serialize with pthread_mutex (recursive). The smbc55
-    // attempt with @synchronized(NSObject) didn't actually serialize
-    // concurrent writes (maybe because of logos preprocessing or some
-    // ARC thing — same gibberish appeared on a fresh log file). Using
-    // a static recursive mutex initialized at first call.
-    //
-    // PTHREAD_MUTEX_RECURSIVE: if our path-filter ever fails and the
-    // diag write recurses into itself on the SAME thread, we don't
-    // deadlock — we just take the lock again. Cross-thread is still
-    // serialized correctly.
-    static pthread_mutex_t lock;
-    static pthread_once_t lock_once = PTHREAD_ONCE_INIT;
-    pthread_once(&lock_once, ^{
-        pthread_mutexattr_t a;
-        pthread_mutexattr_init(&a);
-        pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
-        pthread_mutex_init(&lock, &a);
-        pthread_mutexattr_destroy(&a);
-    });
-    pthread_mutex_lock(&lock);
+    pthread_mutex_t* lock = &shadowhook_smbc_diag_lock;
+    pthread_mutex_lock(lock);
     @try {
         static NSString* path = nil;
         static dispatch_once_t once = 0;
@@ -69,7 +66,7 @@ void smbc24_diag(NSString* event) {
                 writeToFile:path atomically:NO encoding:NSUTF8StringEncoding error:nil];
         });
         if (!path) {
-            pthread_mutex_unlock(&lock);
+            pthread_mutex_unlock(lock);
             return;
         }
         NSString* line = [NSString stringWithFormat:@"%@ %@\n", [NSDate date], event];
@@ -80,7 +77,7 @@ void smbc24_diag(NSString* event) {
             [fh closeFile];
         }
     } @catch (id ex) {}
-    pthread_mutex_unlock(&lock);
+    pthread_mutex_unlock(lock);
 }
 
 // ---------- needles ----------
