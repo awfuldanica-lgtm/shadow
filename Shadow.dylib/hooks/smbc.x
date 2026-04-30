@@ -891,12 +891,20 @@ static void shadowhook_smbc_install_null_page(void) {
 // the Swift inits populate their Optional<T>s correctly — no nil
 // force-unwrap, no exceptions, no state corruption.
 
-// smbc51: per-hook trace counters. Limit each hook to N "trace every
+// smbc51/52: per-hook trace counters. Limit each hook to N "trace every
 // call" entries during startup so we can see what UI Bank actually
 // queries without flooding. After the limit, only "we lied" entries
 // are kept.
+//
+// smbc52 adds a thread-local re-entry guard. Without it, our trace path
+// (which writes a log line via NSFileHandle and calls fileExistsAtPath:
+// + open + ... internally) itself triggers our hooks and recurses
+// 200 deep until the per-counter cap stops it — flooding the log with
+// duplicates of our own diag path. The guard makes a hook call that
+// is INSIDE another hook just pass through to the original silently.
 #include <stdatomic.h>
 #define SMBC_TRACE_LIMIT 200
+static __thread int shadowhook_smbc_in_hook = 0;
 static atomic_int shadowhook_smbc_trace_n_sysctlbyname = 0;
 static atomic_int shadowhook_smbc_trace_n_sysctl = 0;
 static atomic_int shadowhook_smbc_trace_n_access = 0;
@@ -911,11 +919,14 @@ static atomic_int shadowhook_smbc_trace_n_dladdr = 0;
 static atomic_int shadowhook_smbc_trace_n_fexists = 0;
 
 #define SMBC_TRACE(counter, fmt, ...) do {                  \
+    if (shadowhook_smbc_in_hook) break;                     \
+    shadowhook_smbc_in_hook = 1;                            \
     int __n = atomic_fetch_add(&(counter), 1);              \
     if (__n < SMBC_TRACE_LIMIT) {                           \
         smbc24_diag([NSString stringWithFormat:(fmt),       \
             ##__VA_ARGS__]);                                \
     }                                                       \
+    shadowhook_smbc_in_hook = 0;                            \
 } while (0)
 
 static int (*shadowhook_smbc_orig_sysctlbyname)(const char*, void*, size_t*, void*, size_t) = NULL;
