@@ -26,6 +26,8 @@
 #import <stdarg.h>
 #import <stdio.h>
 #import <sys/stat.h>
+#import <fcntl.h>
+#import <unistd.h>
 
 // ---------- diagnostics (smbc24) ----------
 //
@@ -36,48 +38,65 @@
 //   sudo find /var/mobile/Containers/Data/Application -name "shadow_smbc24.log"
 //   cat <found path>
 
-// smbc56: recursive pthread_mutex for diag-write serialization. Initialized
-// at dylib load via __attribute__((constructor)) so it is ready before any
-// smbc24_diag call. Recursive so a same-thread re-entry (if our path filter
-// ever leaks) doesn't deadlock; cross-thread is still serialized correctly.
-static pthread_mutex_t shadowhook_smbc_diag_lock;
+// smbc57: write log entries via raw POSIX open(O_APPEND) + write().
+// NSFileHandle.writeData (used in smbc55/56) was producing interleaved
+// gibberish in the log even with @synchronized / pthread_mutex around
+// the whole sequence — the writeData itself was apparently not the
+// single-syscall write we assumed. Switch to raw POSIX:
+//
+//   fd = open(path, O_WRONLY | O_APPEND)
+//   write(fd, line_bytes, len)
+//   close(fd)
+//
+// POSIX guarantees that any write() of fewer than PIPE_BUF (=4096)
+// bytes to a file opened with O_APPEND is atomic at the kernel level
+// — no interleaving even if many threads write simultaneously, no
+// userspace lock needed. seekToEndOfFile is implicit in O_APPEND.
+//
+// open() goes through our own hook which short-circuits on the diag
+// path (smbc53), so no recursion.
 
-__attribute__((constructor))
-static void shadowhook_smbc_diag_lock_init(void) {
-    pthread_mutexattr_t a;
-    pthread_mutexattr_init(&a);
-    pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
-    pthread_mutex_init(&shadowhook_smbc_diag_lock, &a);
-    pthread_mutexattr_destroy(&a);
-}
+static const char* shadowhook_smbc_diag_path = NULL;
 
 void smbc24_diag(NSString* event) {
-    pthread_mutex_t* lock = &shadowhook_smbc_diag_lock;
-    pthread_mutex_lock(lock);
-    @try {
-        static NSString* path = nil;
-        static dispatch_once_t once = 0;
-        dispatch_once(&once, ^{
+    static dispatch_once_t once = 0;
+    dispatch_once(&once, ^{
+        @try {
             NSArray* dirs = NSSearchPathForDirectoriesInDomains(
                 NSDocumentDirectory, NSUserDomainMask, YES);
             if (dirs.count == 0) return;
-            path = [[dirs firstObject] stringByAppendingPathComponent:@"shadow_smbc24.log"];
-            [[NSString stringWithFormat:@"=== smbc24 session %@ ===\n", [NSDate date]]
-                writeToFile:path atomically:NO encoding:NSUTF8StringEncoding error:nil];
-        });
-        if (!path) {
-            pthread_mutex_unlock(lock);
-            return;
-        }
-        NSString* line = [NSString stringWithFormat:@"%@ %@\n", [NSDate date], event];
-        NSFileHandle* fh = [NSFileHandle fileHandleForWritingAtPath:path];
-        if (fh) {
-            [fh seekToEndOfFile];
-            [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-            [fh closeFile];
+            NSString* p = [[dirs firstObject]
+                stringByAppendingPathComponent:@"shadow_smbc24.log"];
+            const char* utf = [p UTF8String];
+            if (!utf) return;
+            shadowhook_smbc_diag_path = strdup(utf);
+            // Truncate the file so each fresh process starts with an
+            // empty log. Header line below.
+            int fd = open(shadowhook_smbc_diag_path,
+                O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd >= 0) {
+                NSString* hdr = [NSString stringWithFormat:
+                    @"=== smbc24 session %@ ===\n", [NSDate date]];
+                const char* hb = [hdr UTF8String];
+                if (hb) write(fd, hb, strlen(hb));
+                close(fd);
+            }
+        } @catch (id ex) {}
+    });
+    if (!shadowhook_smbc_diag_path) return;
+    @try {
+        NSString* line = [NSString stringWithFormat:@"%@ %@\n",
+            [NSDate date], event];
+        const char* bytes = [line UTF8String];
+        if (!bytes) return;
+        size_t len = strlen(bytes);
+        if (len >= 4000) len = 4000;  // keep under PIPE_BUF for atomicity
+        int fd = open(shadowhook_smbc_diag_path, O_WRONLY | O_APPEND);
+        if (fd >= 0) {
+            write(fd, bytes, len);
+            close(fd);
         }
     } @catch (id ex) {}
-    pthread_mutex_unlock(lock);
 }
 
 // ---------- needles ----------
