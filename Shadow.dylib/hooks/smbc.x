@@ -602,8 +602,14 @@ static void shadowhook_smbc_install_mach_exc_handler(void) {
         smbc24_diag(@"INSTALL: Mach exc insert_right FAILED");
         return;
     }
+    // smbc41: include EXC_MASK_BAD_ACCESS so jumps to garbage after our
+    // __noreturn-returning hooks (raise:format: etc.) get intercepted at
+    // the Mach layer. Without it, BAD_ACCESS reaches the signal layer
+    // (which we cover too) but only after Mach reflection — the Mach
+    // path is faster and lets us advance PC before signal translation.
     if (task_set_exception_ports(mach_task_self(),
-            EXC_MASK_BREAKPOINT | EXC_MASK_BAD_INSTRUCTION | EXC_MASK_CRASH | EXC_MASK_GUARD,
+            EXC_MASK_BREAKPOINT | EXC_MASK_BAD_INSTRUCTION
+            | EXC_MASK_CRASH | EXC_MASK_GUARD | EXC_MASK_BAD_ACCESS,
             shadowhook_smbc_exc_port,
             EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES,
             ARM_THREAD_STATE64) != KERN_SUCCESS) {
@@ -613,9 +619,55 @@ static void shadowhook_smbc_install_mach_exc_handler(void) {
     pthread_t t;
     pthread_create(&t, NULL, shadowhook_smbc_exception_thread, NULL);
     pthread_detach(t);
-    smbc24_diag(@"INSTALL: Mach exc handler (BRK/BAD_INSTR/CRASH/GUARD)");
+    smbc24_diag(@"INSTALL: Mach exc handler (BRK/BAD_INSTR/CRASH/GUARD/BAD_ACCESS)");
     NSLog(@"[Shadow/SMBC] Mach exception handler installed on port %u",
           shadowhook_smbc_exc_port);
+}
+
+// smbc41: dispatch_after diagnostic. If FraudAlert/WMatrix queues a
+// delayed kill (most likely culprit since app survives 1.3s after JB
+// detection without any hooked terminator firing), we'll see it here.
+// Just log the delay and call through — we don't want to disrupt
+// legitimate dispatch_after usage.
+static void (*shadowhook_smbc_orig_dispatch_after)(
+    dispatch_time_t, dispatch_queue_t, dispatch_block_t) = NULL;
+static void shadowhook_smbc_block_dispatch_after(
+    dispatch_time_t when, dispatch_queue_t queue, dispatch_block_t block) {
+    // Compute approximate delay in ms by subtracting from now.
+    dispatch_time_t now = dispatch_time(DISPATCH_TIME_NOW, 0);
+    int64_t delay_ns = (int64_t)when - (int64_t)now;
+    smbc24_diag([NSString stringWithFormat:
+        @"FIRE: dispatch_after delay=%lldms block=%p caller=%p",
+        delay_ns / 1000000, (void*)block, __builtin_return_address(0)]);
+    shadowhook_smbc_orig_dispatch_after(when, queue, block);
+}
+
+// smbc41: NSTimer scheduledTimerWithTimeInterval:target:selector:... —
+// the most common way to schedule a delayed action. Variants exist for
+// block-based and userInfo-based timers; hook the most popular three.
+typedef NSTimer* (*shadowhook_smbc_nstimer_imp_t)(Class, SEL, NSTimeInterval, id, SEL, id, BOOL);
+static shadowhook_smbc_nstimer_imp_t shadowhook_smbc_orig_nstimer = NULL;
+static NSTimer* shadowhook_smbc_block_nstimer(
+    Class self, SEL _cmd, NSTimeInterval interval, id target, SEL action,
+    id userInfo, BOOL repeats) {
+    smbc24_diag([NSString stringWithFormat:
+        @"FIRE: NSTimer interval=%.3fs target=%@ action=%@ repeats=%d caller=%p",
+        interval, [target class], NSStringFromSelector(action), repeats,
+        __builtin_return_address(0)]);
+    return shadowhook_smbc_orig_nstimer(self, _cmd, interval, target, action,
+                                         userInfo, repeats);
+}
+
+typedef NSTimer* (*shadowhook_smbc_nstimer_block_imp_t)(Class, SEL, NSTimeInterval, BOOL, void(^)(NSTimer*));
+static shadowhook_smbc_nstimer_block_imp_t shadowhook_smbc_orig_nstimer_block = NULL;
+static NSTimer* shadowhook_smbc_block_nstimer_block(
+    Class self, SEL _cmd, NSTimeInterval interval, BOOL repeats,
+    void(^block)(NSTimer*)) {
+    smbc24_diag([NSString stringWithFormat:
+        @"FIRE: NSTimer.block interval=%.3fs repeats=%d block=%p caller=%p",
+        interval, repeats, (void*)block, __builtin_return_address(0)]);
+    return shadowhook_smbc_orig_nstimer_block(self, _cmd, interval, repeats,
+                                               block);
 }
 
 // +[NSException raise:format:] — variadic, matched by ObjC selector
@@ -895,6 +947,36 @@ void shadowhook_smbc_terminators(HKSubstitutor* hooks) {
         pthread_create(&hb, NULL, shadowhook_smbc_heartbeat_thread, NULL);
         pthread_detach(hb);
         smbc24_diag(@"INSTALL: heartbeat thread (100ms)");
+    }
+
+    // smbc41: dispatch_after / NSTimer logging — diagnose the delayed kill
+    // that fires ~1.3s after we swallow the JB exceptions.
+    {
+        void* sym = dlsym(RTLD_DEFAULT, "dispatch_after");
+        if (sym) {
+            MSHookFunction(sym, (void*)shadowhook_smbc_block_dispatch_after,
+                           (void**)&shadowhook_smbc_orig_dispatch_after);
+            smbc24_diag(@"INSTALL: dispatch_after");
+        }
+    }
+    {
+        Class cls = [NSTimer class];
+        SEL sel = @selector(scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:);
+        Method m = class_getClassMethod(cls, sel);
+        if (m) {
+            shadowhook_smbc_orig_nstimer =
+                (shadowhook_smbc_nstimer_imp_t)method_getImplementation(m);
+            method_setImplementation(m, (IMP)shadowhook_smbc_block_nstimer);
+            smbc24_diag(@"INSTALL: +[NSTimer scheduledTimer...target:selector:]");
+        }
+        sel = @selector(scheduledTimerWithTimeInterval:repeats:block:);
+        m = class_getClassMethod(cls, sel);
+        if (m) {
+            shadowhook_smbc_orig_nstimer_block =
+                (shadowhook_smbc_nstimer_block_imp_t)method_getImplementation(m);
+            method_setImplementation(m, (IMP)shadowhook_smbc_block_nstimer_block);
+            smbc24_diag(@"INSTALL: +[NSTimer scheduledTimer...block:]");
+        }
     }
 
     NSLog(@"[Shadow/SMBC] terminator chain blocked");
