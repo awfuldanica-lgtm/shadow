@@ -1184,7 +1184,16 @@ static char* shadowhook_smbc_block_getenv(const char* name) {
         @"trace: getenv(%s)", name ?: "(null)");
     if (name && (strstr(name, "DYLD_INSERT_LIBRARIES")
                  || strstr(name, "_MSSafeMode")
-                 || strstr(name, "_SubstrateUseSystemLogs"))) {
+                 || strstr(name, "_SubstrateUseSystemLogs")
+                 // smbc58: UI Bank queries getenv("JBPATHLOG") 8 times
+                 // at startup. JBPATHLOG is set by some JB framework
+                 // (MobileSubstrate-like log path) and its presence is
+                 // a strong JB indicator. Return NULL.
+                 || strstr(name, "JBPATHLOG")
+                 || strstr(name, "JBPath")
+                 || strstr(name, "JBROOT")
+                 || strstr(name, "ROOTHIDE")
+                 || strstr(name, "TWEAK"))) {
         smbc24_diag([NSString stringWithFormat:
             @"FIRE: getenv(%s) -> NULL (lied)", name]);
         return NULL;
