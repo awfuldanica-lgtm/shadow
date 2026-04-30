@@ -395,6 +395,9 @@ static mach_port_t shadowhook_smbc_exc_port = MACH_PORT_NULL;
 static void* shadowhook_smbc_exception_thread(void* arg) {
     (void)arg;
     while (1) {
+        // Mach exception message layout matches mach_exc_server expectations.
+        // Packed because int64_t code[2] lands on offset 68 (not 8-aligned)
+        // — kernel sends it that way, so we must match.
         struct __attribute__((packed)) {
             mach_msg_header_t Head;
             mach_msg_body_t body;
@@ -406,8 +409,11 @@ static void* shadowhook_smbc_exception_thread(void* arg) {
             int64_t code[2];
             char trailer[64];
         } msg;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Waddress-of-packed-member"
         kern_return_t r = mach_msg(&msg.Head, MACH_RCV_MSG, 0, sizeof(msg),
             shadowhook_smbc_exc_port, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+#pragma clang diagnostic pop
         if (r != KERN_SUCCESS) continue;
 
         smbc24_diag([NSString stringWithFormat:
@@ -442,8 +448,11 @@ static void* shadowhook_smbc_exception_thread(void* arg) {
         reply.Head.msgh_voucher_port = 0;
         reply.NDR = msg.NDR;
         reply.RetCode = KERN_SUCCESS;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Waddress-of-packed-member"
         mach_msg(&reply.Head, MACH_SEND_MSG, sizeof(reply), 0, MACH_PORT_NULL,
                  MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+#pragma clang diagnostic pop
 
         // Release ports we received.
         mach_port_deallocate(mach_task_self(), msg.thread.name);
