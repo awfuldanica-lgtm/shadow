@@ -7,7 +7,7 @@ Recommends: mobilesubstrate, preferenceloader
 Provides: me.jjolano.shadow.beta
 Replaces: me.jjolano.shadow.beta
 Conflicts: me.jjolano.shadow.beta, me.jjolano.shadow.legacy
-Version: 3.7.6+smbc48
+Version: 3.7.6+smbc49
 Architecture: iphoneos-arm
 Description: A modern jailbreak detection bypass.
 Maintainer: jjolano

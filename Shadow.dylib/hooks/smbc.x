@@ -21,6 +21,10 @@
 #import <mach/vm_statistics.h>
 #import <mach-o/dyld.h>
 #import <string.h>
+#import <dlfcn.h>
+#import <errno.h>
+#import <stdarg.h>
+#import <stdio.h>
 
 // ---------- diagnostics (smbc24) ----------
 //
@@ -875,6 +879,271 @@ static void shadowhook_smbc_install_null_page(void) {
     smbc24_diag(@"INSTALL: NULL page mapped read-only at 0x0..0x4000");
 }
 
+// smbc49: hook the actual JB indicator probes (sysctlbyname, dlsym,
+// dlopen, dladdr, access, open, fopen, getenv) at libc/dyld level. The
+// agent's deeper disassembly showed UI Bank queries these directly
+// (12x sysctlbyname, 25x dlsym, 5x dlopen, 10x dladdr, 4x access, 3x
+// getenv, etc.) to detect substrate/frida/roothide and trace state,
+// then fails with Swift fatal-error nil-unwrap (which is what we were
+// previously catching as raise:format:). Patch the probes to deny
+// every JB indicator so the app's "isJB" decision becomes false and
+// the Swift inits populate their Optional<T>s correctly — no nil
+// force-unwrap, no exceptions, no state corruption.
+
+static int (*shadowhook_smbc_orig_sysctlbyname)(const char*, void*, size_t*, void*, size_t) = NULL;
+static int shadowhook_smbc_block_sysctlbyname(
+    const char* name, void* oldp, size_t* oldlenp, void* newp, size_t newlen) {
+    int rv = shadowhook_smbc_orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
+    smbc24_diag([NSString stringWithFormat:
+        @"FIRE: sysctlbyname name=%s rv=%d", name ?: "(null)", rv]);
+    if (rv == 0 && oldp && oldlenp && name) {
+        // Anti-debug pattern: query KERN_PROC for current pid then check
+        // p_flag for P_TRACED (0x800). Clear that flag so the app sees
+        // "not being traced".
+        if (strcmp(name, "kern.proc.pid") == 0
+            || strncmp(name, "kern.proc.pid.", 14) == 0) {
+            // kp_proc.p_flag is at offset 32 in struct kinfo_proc (xnu).
+            if (*oldlenp >= 36) {
+                int* pflag = (int*)((char*)oldp + 32);
+                if (*pflag & 0x800) {
+                    *pflag &= ~0x800;
+                    smbc24_diag(@"  (cleared P_TRACED in kern.proc.pid result)");
+                }
+            }
+        }
+        // amfi.dev_signed is queried to detect dev-signed binaries — pretend
+        // the device only runs Apple-signed code.
+        if (strcmp(name, "security.mac.amfi.dev_signed") == 0
+            && *oldlenp >= 4) {
+            *(int*)oldp = 0;
+        }
+    }
+    return rv;
+}
+
+static int (*shadowhook_smbc_orig_sysctl)(int*, unsigned int, void*, size_t*, void*, size_t) = NULL;
+static int shadowhook_smbc_block_sysctl(
+    int* mib, unsigned int namelen, void* oldp, size_t* oldlenp,
+    void* newp, size_t newlen) {
+    int rv = shadowhook_smbc_orig_sysctl(mib, namelen, oldp, oldlenp,
+                                          newp, newlen);
+    if (rv == 0 && namelen >= 4 && mib && oldp && oldlenp
+        && mib[0] == 1 /*CTL_KERN*/ && mib[1] == 14 /*KERN_PROC*/
+        && mib[2] == 1 /*KERN_PROC_PID*/) {
+        if (*oldlenp >= 36) {
+            int* pflag = (int*)((char*)oldp + 32);
+            if (*pflag & 0x800) {
+                *pflag &= ~0x800;
+                smbc24_diag(@"FIRE: sysctl KERN_PROC_PID — cleared P_TRACED");
+            }
+        }
+    }
+    return rv;
+}
+
+static BOOL shadowhook_smbc_path_looks_jb(const char* p) {
+    if (!p) return NO;
+    static const char* needles[] = {
+        "/var/jb",
+        "/private/var/jb",
+        "/Applications/Cydia",
+        "/Applications/Sileo",
+        "/Applications/Zebra",
+        "/usr/lib/libsubstrate",
+        "/usr/lib/MobileSubstrate",
+        "/usr/lib/substitute-",
+        "/usr/lib/libhooker",
+        "/Library/MobileSubstrate",
+        "/Library/Frameworks/CydiaSubstrate.framework",
+        "/var/lib/apt",
+        "/var/lib/cydia",
+        "/private/var/lib/apt",
+        "/private/var/lib/cydia",
+        "/var/cache/apt",
+        "/usr/sbin/sshd",
+        "/etc/apt",
+        "/bin/bash",
+        "/usr/libexec/sftp-server",
+        "/var/checkra1n.dmg",
+        "/.bootstrapped_electra",
+        "/.installed_unc0ver",
+        "/jb",
+        "roothide",
+        "jbroot-",
+        "/var/jbroot-",
+        "frida",
+        "Frida",
+        "FRIDA",
+        "MobileSubstrate",
+        "cydia://",
+        NULL
+    };
+    for (int i = 0; needles[i]; i++) {
+        if (strstr(p, needles[i])) return YES;
+    }
+    return NO;
+}
+
+static int (*shadowhook_smbc_orig_access)(const char*, int) = NULL;
+static int shadowhook_smbc_block_access(const char* path, int amode) {
+    if (shadowhook_smbc_path_looks_jb(path)) {
+        smbc24_diag([NSString stringWithFormat:
+            @"FIRE: access(%s,%d) -> ENOENT (lied)", path, amode]);
+        errno = 2; // ENOENT
+        return -1;
+    }
+    return shadowhook_smbc_orig_access(path, amode);
+}
+
+static int (*shadowhook_smbc_orig_open)(const char*, int, ...) = NULL;
+static int shadowhook_smbc_block_open(const char* path, int oflag, ...) {
+    if (shadowhook_smbc_path_looks_jb(path)) {
+        smbc24_diag([NSString stringWithFormat:
+            @"FIRE: open(%s) -> ENOENT (lied)", path]);
+        errno = 2;
+        return -1;
+    }
+    mode_t mode = 0;
+    if (oflag & 0x200 /* O_CREAT */) {
+        va_list ap; va_start(ap, oflag); mode = va_arg(ap, int); va_end(ap);
+    }
+    return shadowhook_smbc_orig_open(path, oflag, mode);
+}
+
+static FILE* (*shadowhook_smbc_orig_fopen)(const char*, const char*) = NULL;
+static FILE* shadowhook_smbc_block_fopen(const char* path, const char* mode) {
+    if (shadowhook_smbc_path_looks_jb(path)) {
+        smbc24_diag([NSString stringWithFormat:
+            @"FIRE: fopen(%s) -> NULL (lied)", path]);
+        errno = 2;
+        return NULL;
+    }
+    return shadowhook_smbc_orig_fopen(path, mode);
+}
+
+static char* (*shadowhook_smbc_orig_getenv)(const char*) = NULL;
+static char* shadowhook_smbc_block_getenv(const char* name) {
+    if (name && (strstr(name, "DYLD_INSERT_LIBRARIES")
+                 || strstr(name, "_MSSafeMode")
+                 || strstr(name, "_SubstrateUseSystemLogs"))) {
+        smbc24_diag([NSString stringWithFormat:
+            @"FIRE: getenv(%s) -> NULL (lied)", name]);
+        return NULL;
+    }
+    return shadowhook_smbc_orig_getenv(name);
+}
+
+static void* (*shadowhook_smbc_orig_dlopen)(const char*, int) = NULL;
+static void* shadowhook_smbc_block_dlopen(const char* path, int mode) {
+    if (shadowhook_smbc_path_looks_jb(path)) {
+        smbc24_diag([NSString stringWithFormat:
+            @"FIRE: dlopen(%s) -> NULL (lied)", path]);
+        return NULL;
+    }
+    return shadowhook_smbc_orig_dlopen(path, mode);
+}
+
+static void* (*shadowhook_smbc_orig_dlsym)(void*, const char*) = NULL;
+static void* shadowhook_smbc_block_dlsym(void* handle, const char* name) {
+    if (name) {
+        // Substrate / frida / hooking-tool symbols.
+        static const char* hot[] = {
+            "MSGetImageByName",
+            "MSHookFunction",
+            "MSHookMessageEx",
+            "MSFindSymbol",
+            "task_for_pid",
+            "_dyld_get_image_count",
+            "_dyld_get_image_header",
+            "_dyld_get_image_name",
+            "_dyld_get_image_vmaddr_slide",
+            "frida_agent_main",
+            "gum_init",
+            "Substrate",
+            "substitute_hook_functions",
+            NULL
+        };
+        for (int i = 0; hot[i]; i++) {
+            if (strstr(name, hot[i])) {
+                smbc24_diag([NSString stringWithFormat:
+                    @"FIRE: dlsym(%s) -> NULL (lied)", name]);
+                return NULL;
+            }
+        }
+    }
+    return shadowhook_smbc_orig_dlsym(handle, name);
+}
+
+static int (*shadowhook_smbc_orig_dladdr)(const void*, Dl_info*) = NULL;
+static int shadowhook_smbc_block_dladdr(const void* addr, Dl_info* info) {
+    int rv = shadowhook_smbc_orig_dladdr(addr, info);
+    if (rv && info && info->dli_fname && shadowhook_smbc_path_looks_jb(info->dli_fname)) {
+        smbc24_diag([NSString stringWithFormat:
+            @"FIRE: dladdr returned %s — replacing with /usr/lib/dyld",
+            info->dli_fname]);
+        info->dli_fname = "/usr/lib/dyld";
+    }
+    return rv;
+}
+
+static void shadowhook_smbc_install_probe_hooks(HKSubstitutor* hooks) {
+    void* sym;
+    sym = dlsym(RTLD_DEFAULT, "sysctlbyname");
+    if (sym) {
+        MSHookFunction(sym, (void*)shadowhook_smbc_block_sysctlbyname,
+                       (void**)&shadowhook_smbc_orig_sysctlbyname);
+        smbc24_diag(@"INSTALL: sysctlbyname");
+    }
+    sym = dlsym(RTLD_DEFAULT, "sysctl");
+    if (sym) {
+        MSHookFunction(sym, (void*)shadowhook_smbc_block_sysctl,
+                       (void**)&shadowhook_smbc_orig_sysctl);
+        smbc24_diag(@"INSTALL: sysctl");
+    }
+    sym = dlsym(RTLD_DEFAULT, "access");
+    if (sym) {
+        MSHookFunction(sym, (void*)shadowhook_smbc_block_access,
+                       (void**)&shadowhook_smbc_orig_access);
+        smbc24_diag(@"INSTALL: access");
+    }
+    sym = dlsym(RTLD_DEFAULT, "open");
+    if (sym) {
+        MSHookFunction(sym, (void*)shadowhook_smbc_block_open,
+                       (void**)&shadowhook_smbc_orig_open);
+        smbc24_diag(@"INSTALL: open");
+    }
+    sym = dlsym(RTLD_DEFAULT, "fopen");
+    if (sym) {
+        MSHookFunction(sym, (void*)shadowhook_smbc_block_fopen,
+                       (void**)&shadowhook_smbc_orig_fopen);
+        smbc24_diag(@"INSTALL: fopen");
+    }
+    sym = dlsym(RTLD_DEFAULT, "getenv");
+    if (sym) {
+        MSHookFunction(sym, (void*)shadowhook_smbc_block_getenv,
+                       (void**)&shadowhook_smbc_orig_getenv);
+        smbc24_diag(@"INSTALL: getenv");
+    }
+    sym = dlsym(RTLD_DEFAULT, "dlopen");
+    if (sym) {
+        MSHookFunction(sym, (void*)shadowhook_smbc_block_dlopen,
+                       (void**)&shadowhook_smbc_orig_dlopen);
+        smbc24_diag(@"INSTALL: dlopen");
+    }
+    sym = dlsym(RTLD_DEFAULT, "dlsym");
+    if (sym) {
+        MSHookFunction(sym, (void*)shadowhook_smbc_block_dlsym,
+                       (void**)&shadowhook_smbc_orig_dlsym);
+        smbc24_diag(@"INSTALL: dlsym");
+    }
+    sym = dlsym(RTLD_DEFAULT, "dladdr");
+    if (sym) {
+        MSHookFunction(sym, (void*)shadowhook_smbc_block_dladdr,
+                       (void**)&shadowhook_smbc_orig_dladdr);
+        smbc24_diag(@"INSTALL: dladdr");
+    }
+}
+
 // smbc47: hook UIBank_PRO main exe's two Swift JB-detection functions
 // directly, replacing them with a stub that returns 0 (false). The
 // disassembly identified two functions:
@@ -899,6 +1168,7 @@ static int shadowhook_smbc_jbcheck_returns_false(void) {
     );
 }
 
+__attribute__((unused))
 static void shadowhook_smbc_install_jbcheck_hooks(HKSubstitutor* hooks) {
     static const struct {
         const char* name_substr;
@@ -943,13 +1213,13 @@ static void shadowhook_smbc_install_jbcheck_hooks(HKSubstitutor* hooks) {
 }
 
 void shadowhook_smbc_terminators(HKSubstitutor* hooks) {
-    // smbc47 was DISABLED in smbc48: replacing the function entry with
-    // MOV X0,#0; RET skipped not just JB checks but the whole 744-
-    // instruction init function, leaving downstream state uninitialised
-    // and crashing within ~1s with FP corrupted to ASCII strings. We
-    // need a more surgical hook that targets only the JB-indicator
-    // probes inside the function, not the whole entry.
-    //   shadowhook_smbc_install_jbcheck_hooks(hooks);
+    // smbc47 was DISABLED in smbc48 (replacing the entry was too coarse —
+    // it skipped legitimate Swift class-init too, crashing the app).
+    // smbc49 retargets at the actual probes the JB-detection logic
+    // queries: sysctlbyname/sysctl/access/open/fopen/getenv/dlopen/
+    // dlsym/dladdr. Each is hooked to deny every JB indicator (and
+    // log every call so we can see what fires).
+    shadowhook_smbc_install_probe_hooks(hooks);
 
     // smbc45: install NULL page first, before anything else can fault.
     shadowhook_smbc_install_null_page();
