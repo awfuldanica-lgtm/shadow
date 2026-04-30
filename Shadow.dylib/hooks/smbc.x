@@ -17,7 +17,8 @@
 #import <pthread.h>
 #import <signal.h>
 #import <stdlib.h>
-#import <mach/mach_vm.h>
+#import <mach/vm_map.h>
+#import <mach/vm_statistics.h>
 
 // ---------- diagnostics (smbc24) ----------
 //
@@ -821,9 +822,9 @@ static void* shadowhook_smbc_heartbeat_thread(void* arg) {
 // Limited to the first 16KB so writes still trap (we want to know
 // about NULL writes — those are real bugs we should not paper over).
 static void shadowhook_smbc_install_null_page(void) {
-    mach_vm_address_t addr = 0;
-    mach_vm_size_t size = 0x4000;  // one 16K page
-    kern_return_t kr = mach_vm_allocate(mach_task_self(), &addr, size,
+    vm_address_t addr = 0;
+    vm_size_t size = 0x4000;  // one 16K page
+    kern_return_t kr = vm_allocate(mach_task_self(), &addr, size,
         VM_FLAGS_FIXED);
     if (kr != KERN_SUCCESS) {
         smbc24_diag([NSString stringWithFormat:
@@ -833,13 +834,13 @@ static void shadowhook_smbc_install_null_page(void) {
     if (addr != 0) {
         // Got a different address back — the FIXED flag was ignored.
         // Release and abandon rather than leaving an unrelated mapping.
-        mach_vm_deallocate(mach_task_self(), addr, size);
+        vm_deallocate(mach_task_self(), addr, size);
         smbc24_diag([NSString stringWithFormat:
-            @"INSTALL: NULL page allocated at 0x%llx (not 0), released",
-            (unsigned long long)addr]);
+            @"INSTALL: NULL page allocated at 0x%lx (not 0), released",
+            (unsigned long)addr]);
         return;
     }
-    kr = mach_vm_protect(mach_task_self(), 0, size, FALSE, VM_PROT_READ);
+    kr = vm_protect(mach_task_self(), 0, size, FALSE, VM_PROT_READ);
     if (kr != KERN_SUCCESS) {
         smbc24_diag([NSString stringWithFormat:
             @"INSTALL: NULL page protect FAILED kr=%d", kr]);
