@@ -956,6 +956,10 @@ static int (*shadowhook_smbc_orig_sysctl)(int*, unsigned int, void*, size_t*, vo
 static int shadowhook_smbc_block_sysctl(
     int* mib, unsigned int namelen, void* oldp, size_t* oldlenp,
     void* newp, size_t newlen) {
+    SMBC_TRACE(shadowhook_smbc_trace_n_sysctl,
+        @"trace: sysctl(mib[0..%u]={%d,%d,%d,%d})", namelen,
+        namelen >= 1 ? mib[0] : 0, namelen >= 2 ? mib[1] : 0,
+        namelen >= 3 ? mib[2] : 0, namelen >= 4 ? mib[3] : 0);
     int rv = shadowhook_smbc_orig_sysctl(mib, namelen, oldp, oldlenp,
                                           newp, newlen);
     if (rv == 0 && namelen >= 4 && mib && oldp && oldlenp
