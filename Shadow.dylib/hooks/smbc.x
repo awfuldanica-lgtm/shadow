@@ -891,9 +891,38 @@ static void shadowhook_smbc_install_null_page(void) {
 // the Swift inits populate their Optional<T>s correctly — no nil
 // force-unwrap, no exceptions, no state corruption.
 
+// smbc51: per-hook trace counters. Limit each hook to N "trace every
+// call" entries during startup so we can see what UI Bank actually
+// queries without flooding. After the limit, only "we lied" entries
+// are kept.
+#include <stdatomic.h>
+#define SMBC_TRACE_LIMIT 200
+static atomic_int shadowhook_smbc_trace_n_sysctlbyname = 0;
+static atomic_int shadowhook_smbc_trace_n_sysctl = 0;
+static atomic_int shadowhook_smbc_trace_n_access = 0;
+static atomic_int shadowhook_smbc_trace_n_stat = 0;
+static atomic_int shadowhook_smbc_trace_n_lstat = 0;
+static atomic_int shadowhook_smbc_trace_n_open = 0;
+static atomic_int shadowhook_smbc_trace_n_fopen = 0;
+static atomic_int shadowhook_smbc_trace_n_getenv = 0;
+static atomic_int shadowhook_smbc_trace_n_dlopen = 0;
+static atomic_int shadowhook_smbc_trace_n_dlsym = 0;
+static atomic_int shadowhook_smbc_trace_n_dladdr = 0;
+static atomic_int shadowhook_smbc_trace_n_fexists = 0;
+
+#define SMBC_TRACE(counter, fmt, ...) do {                  \
+    int __n = atomic_fetch_add(&(counter), 1);              \
+    if (__n < SMBC_TRACE_LIMIT) {                           \
+        smbc24_diag([NSString stringWithFormat:(fmt),       \
+            ##__VA_ARGS__]);                                \
+    }                                                       \
+} while (0)
+
 static int (*shadowhook_smbc_orig_sysctlbyname)(const char*, void*, size_t*, void*, size_t) = NULL;
 static int shadowhook_smbc_block_sysctlbyname(
     const char* name, void* oldp, size_t* oldlenp, void* newp, size_t newlen) {
+    SMBC_TRACE(shadowhook_smbc_trace_n_sysctlbyname,
+        @"trace: sysctlbyname(%s)", name ?: "(null)");
     int rv = shadowhook_smbc_orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
     if (rv == 0 && oldp && oldlenp && name) {
         // Anti-debug pattern: query KERN_PROC for current pid then check
@@ -994,6 +1023,8 @@ static BOOL shadowhook_smbc_path_looks_jb(const char* p) {
 
 static int (*shadowhook_smbc_orig_access)(const char*, int) = NULL;
 static int shadowhook_smbc_block_access(const char* path, int amode) {
+    SMBC_TRACE(shadowhook_smbc_trace_n_access,
+        @"trace: access(%s,%d)", path ?: "(null)", amode);
     if (shadowhook_smbc_path_looks_jb(path)) {
         smbc24_diag([NSString stringWithFormat:
             @"FIRE: access(%s,%d) -> ENOENT (lied)", path, amode]);
@@ -1005,6 +1036,8 @@ static int shadowhook_smbc_block_access(const char* path, int amode) {
 
 static int (*shadowhook_smbc_orig_stat)(const char*, struct stat*) = NULL;
 static int shadowhook_smbc_block_stat(const char* path, struct stat* buf) {
+    SMBC_TRACE(shadowhook_smbc_trace_n_stat,
+        @"trace: stat(%s)", path ?: "(null)");
     if (shadowhook_smbc_path_looks_jb(path)) {
         smbc24_diag([NSString stringWithFormat:
             @"FIRE: stat(%s) -> ENOENT (lied)", path]);
@@ -1016,6 +1049,8 @@ static int shadowhook_smbc_block_stat(const char* path, struct stat* buf) {
 
 static int (*shadowhook_smbc_orig_lstat)(const char*, struct stat*) = NULL;
 static int shadowhook_smbc_block_lstat(const char* path, struct stat* buf) {
+    SMBC_TRACE(shadowhook_smbc_trace_n_lstat,
+        @"trace: lstat(%s)", path ?: "(null)");
     if (shadowhook_smbc_path_looks_jb(path)) {
         smbc24_diag([NSString stringWithFormat:
             @"FIRE: lstat(%s) -> ENOENT (lied)", path]);
@@ -1027,6 +1062,8 @@ static int shadowhook_smbc_block_lstat(const char* path, struct stat* buf) {
 
 static int (*shadowhook_smbc_orig_open)(const char*, int, ...) = NULL;
 static int shadowhook_smbc_block_open(const char* path, int oflag, ...) {
+    SMBC_TRACE(shadowhook_smbc_trace_n_open,
+        @"trace: open(%s,0x%x)", path ?: "(null)", oflag);
     if (shadowhook_smbc_path_looks_jb(path)) {
         smbc24_diag([NSString stringWithFormat:
             @"FIRE: open(%s) -> ENOENT (lied)", path]);
@@ -1042,6 +1079,8 @@ static int shadowhook_smbc_block_open(const char* path, int oflag, ...) {
 
 static FILE* (*shadowhook_smbc_orig_fopen)(const char*, const char*) = NULL;
 static FILE* shadowhook_smbc_block_fopen(const char* path, const char* mode) {
+    SMBC_TRACE(shadowhook_smbc_trace_n_fopen,
+        @"trace: fopen(%s,%s)", path ?: "(null)", mode ?: "(null)");
     if (shadowhook_smbc_path_looks_jb(path)) {
         smbc24_diag([NSString stringWithFormat:
             @"FIRE: fopen(%s) -> NULL (lied)", path]);
@@ -1053,6 +1092,8 @@ static FILE* shadowhook_smbc_block_fopen(const char* path, const char* mode) {
 
 static char* (*shadowhook_smbc_orig_getenv)(const char*) = NULL;
 static char* shadowhook_smbc_block_getenv(const char* name) {
+    SMBC_TRACE(shadowhook_smbc_trace_n_getenv,
+        @"trace: getenv(%s)", name ?: "(null)");
     if (name && (strstr(name, "DYLD_INSERT_LIBRARIES")
                  || strstr(name, "_MSSafeMode")
                  || strstr(name, "_SubstrateUseSystemLogs"))) {
@@ -1065,6 +1106,8 @@ static char* shadowhook_smbc_block_getenv(const char* name) {
 
 static void* (*shadowhook_smbc_orig_dlopen)(const char*, int) = NULL;
 static void* shadowhook_smbc_block_dlopen(const char* path, int mode) {
+    SMBC_TRACE(shadowhook_smbc_trace_n_dlopen,
+        @"trace: dlopen(%s,0x%x)", path ?: "(null)", mode);
     if (shadowhook_smbc_path_looks_jb(path)) {
         smbc24_diag([NSString stringWithFormat:
             @"FIRE: dlopen(%s) -> NULL (lied)", path]);
@@ -1075,6 +1118,8 @@ static void* shadowhook_smbc_block_dlopen(const char* path, int mode) {
 
 static void* (*shadowhook_smbc_orig_dlsym)(void*, const char*) = NULL;
 static void* shadowhook_smbc_block_dlsym(void* handle, const char* name) {
+    SMBC_TRACE(shadowhook_smbc_trace_n_dlsym,
+        @"trace: dlsym(%s)", name ?: "(null)");
     if (name) {
         // Substrate / frida / hooking-tool symbols.
         static const char* hot[] = {
@@ -1107,6 +1152,10 @@ static void* shadowhook_smbc_block_dlsym(void* handle, const char* name) {
 static int (*shadowhook_smbc_orig_dladdr)(const void*, Dl_info*) = NULL;
 static int shadowhook_smbc_block_dladdr(const void* addr, Dl_info* info) {
     int rv = shadowhook_smbc_orig_dladdr(addr, info);
+    if (rv && info && info->dli_fname) {
+        SMBC_TRACE(shadowhook_smbc_trace_n_dladdr,
+            @"trace: dladdr(%p) -> %s", addr, info->dli_fname);
+    }
     if (rv && info && info->dli_fname && shadowhook_smbc_path_looks_jb(info->dli_fname)) {
         smbc24_diag([NSString stringWithFormat:
             @"FIRE: dladdr returned %s — replacing with /usr/lib/dyld",
@@ -1122,6 +1171,8 @@ static shadowhook_smbc_fexists_imp_t shadowhook_smbc_orig_fexists = NULL;
 static BOOL shadowhook_smbc_block_fexists(id self, SEL _cmd, NSString* path) {
     if (path) {
         const char* cpath = [path UTF8String];
+        SMBC_TRACE(shadowhook_smbc_trace_n_fexists,
+            @"trace: fileExistsAtPath(%s)", cpath ?: "(null)");
         if (shadowhook_smbc_path_looks_jb(cpath)) {
             smbc24_diag([NSString stringWithFormat:
                 @"FIRE: -[NSFileManager fileExistsAtPath:%@] -> NO (lied)",
@@ -1137,6 +1188,8 @@ static shadowhook_smbc_fexists_isdir_imp_t shadowhook_smbc_orig_fexists_isdir = 
 static BOOL shadowhook_smbc_block_fexists_isdir(id self, SEL _cmd, NSString* path, BOOL* isDir) {
     if (path) {
         const char* cpath = [path UTF8String];
+        SMBC_TRACE(shadowhook_smbc_trace_n_fexists,
+            @"trace: fileExistsAtPath:isDir(%s)", cpath ?: "(null)");
         if (shadowhook_smbc_path_looks_jb(cpath)) {
             smbc24_diag([NSString stringWithFormat:
                 @"FIRE: -[NSFileManager fileExistsAtPath:%@ isDir:] -> NO (lied)",
