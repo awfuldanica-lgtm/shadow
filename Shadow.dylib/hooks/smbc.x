@@ -37,26 +37,37 @@
 //   cat <found path>
 
 void smbc24_diag(NSString* event) {
-    @try {
-        static NSString* path = nil;
-        static dispatch_once_t once = 0;
-        dispatch_once(&once, ^{
-            NSArray* dirs = NSSearchPathForDirectoriesInDomains(
-                NSDocumentDirectory, NSUserDomainMask, YES);
-            if (dirs.count == 0) return;
-            path = [[dirs firstObject] stringByAppendingPathComponent:@"shadow_smbc24.log"];
-            [[NSString stringWithFormat:@"=== smbc24 session %@ ===\n", [NSDate date]]
-                writeToFile:path atomically:NO encoding:NSUTF8StringEncoding error:nil];
-        });
-        if (!path) return;
-        NSString* line = [NSString stringWithFormat:@"%@ %@\n", [NSDate date], event];
-        NSFileHandle* fh = [NSFileHandle fileHandleForWritingAtPath:path];
-        if (fh) {
-            [fh seekToEndOfFile];
-            [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-            [fh closeFile];
-        }
-    } @catch (id ex) {}
+    // smbc55: serialize all log writes globally. Without this, multiple
+    // app threads calling our hooks concurrently each open the log file
+    // and writeData at end-of-file. seekToEndOfFile + writeData is not
+    // atomic, so when two threads interleave their writes the bytes get
+    // shuffled at the file level — pages of base64-looking gibberish
+    // appear in the log instead of clean trace lines.
+    static NSObject* lock = nil;
+    static dispatch_once_t lock_once = 0;
+    dispatch_once(&lock_once, ^{ lock = [NSObject new]; });
+    @synchronized(lock) {
+        @try {
+            static NSString* path = nil;
+            static dispatch_once_t once = 0;
+            dispatch_once(&once, ^{
+                NSArray* dirs = NSSearchPathForDirectoriesInDomains(
+                    NSDocumentDirectory, NSUserDomainMask, YES);
+                if (dirs.count == 0) return;
+                path = [[dirs firstObject] stringByAppendingPathComponent:@"shadow_smbc24.log"];
+                [[NSString stringWithFormat:@"=== smbc24 session %@ ===\n", [NSDate date]]
+                    writeToFile:path atomically:NO encoding:NSUTF8StringEncoding error:nil];
+            });
+            if (!path) return;
+            NSString* line = [NSString stringWithFormat:@"%@ %@\n", [NSDate date], event];
+            NSFileHandle* fh = [NSFileHandle fileHandleForWritingAtPath:path];
+            if (fh) {
+                [fh seekToEndOfFile];
+                [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+                [fh closeFile];
+            }
+        } @catch (id ex) {}
+    }
 }
 
 // ---------- needles ----------
