@@ -943,10 +943,13 @@ static void shadowhook_smbc_install_jbcheck_hooks(HKSubstitutor* hooks) {
 }
 
 void shadowhook_smbc_terminators(HKSubstitutor* hooks) {
-    // smbc47: hook the two Swift JB-detection functions in UIBank_PRO
-    // before installing the exception swallowers — if the hooks succeed,
-    // the swallowers should never need to fire.
-    shadowhook_smbc_install_jbcheck_hooks(hooks);
+    // smbc47 was DISABLED in smbc48: replacing the function entry with
+    // MOV X0,#0; RET skipped not just JB checks but the whole 744-
+    // instruction init function, leaving downstream state uninitialised
+    // and crashing within ~1s with FP corrupted to ASCII strings. We
+    // need a more surgical hook that targets only the JB-indicator
+    // probes inside the function, not the whole entry.
+    //   shadowhook_smbc_install_jbcheck_hooks(hooks);
 
     // smbc45: install NULL page first, before anything else can fault.
     shadowhook_smbc_install_null_page();
