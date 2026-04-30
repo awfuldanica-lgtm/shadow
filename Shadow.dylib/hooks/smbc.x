@@ -625,10 +625,66 @@ static shadowhook_smbc_nsexc_raise_imp_t shadowhook_smbc_orig_nsexception_raise 
 
 static void shadowhook_smbc_nsexception_raise_replacement(
     Class self, SEL _cmd, NSString* name, NSString* format, ...) {
+    smbc24_diag([NSString stringWithFormat:
+        @"FIRE: dying via +[NSException raise:format:] name=%@ from %p",
+        name, __builtin_return_address(0)]);
     NSLog(@"[Shadow/SMBC] swallowed NSException raise: name=%@ format=%@", name, format);
-    // Don't call original — exception is silenced. Caller's __noreturn assumption
-    // is violated but we return cleanly; if calling code does anything sane after
-    // a raise: (which it shouldn't, but compilers vary) it just continues.
+}
+
+// smbc40: -[NSException raise] (instance method, no format) — separate
+// selector from +[NSException raise:format:]. Caught here so we can
+// distinguish between class-method and instance-method raise paths.
+typedef void (*shadowhook_smbc_nsexc_irraise_imp_t)(NSException*, SEL);
+static shadowhook_smbc_nsexc_irraise_imp_t shadowhook_smbc_orig_nsexception_irraise = NULL;
+static void shadowhook_smbc_nsexception_irraise_replacement(
+    NSException* self, SEL _cmd) {
+    smbc24_diag([NSString stringWithFormat:
+        @"FIRE: dying via -[NSException raise] name=%@ reason=%@ from %p",
+        self.name, self.reason, __builtin_return_address(0)]);
+    NSLog(@"[Shadow/SMBC] swallowed -[NSException raise] name=%@ reason=%@",
+          self.name, self.reason);
+}
+
+// smbc40: objc_exception_throw — the low-level libobjc entry point that
+// +[NSException raise:format:] eventually calls. If app code calls
+// objc_exception_throw directly (e.g. precompiled foundation, ObjC
+// rethrow), it bypasses our raise:format: hook.
+static void (*shadowhook_smbc_orig_objc_throw)(id) = NULL;
+static void shadowhook_smbc_block_objc_throw(id exception) {
+    @try {
+        NSException* e = (NSException*)exception;
+        smbc24_diag([NSString stringWithFormat:
+            @"FIRE: dying via objc_exception_throw name=%@ reason=%@ from %p",
+            e.name, e.reason, __builtin_return_address(0)]);
+    } @catch (id ex) {
+        smbc24_diag(@"FIRE: dying via objc_exception_throw (unreadable)");
+    }
+    NSLog(@"[Shadow/SMBC] swallowed objc_exception_throw");
+}
+
+// smbc40: __assert_rtn — BSD-style assertion failure. Calls abort() but
+// some toolchains link __assert_rtn directly bypassing our abort hook
+// (e.g. when the trap is part of a __noreturn-marked path).
+static void (*shadowhook_smbc_orig_assert_rtn)(const char*, const char*, int, const char*) = NULL;
+static void shadowhook_smbc_block_assert_rtn(const char* func, const char* file, int line, const char* expr) {
+    smbc24_diag([NSString stringWithFormat:
+        @"FIRE: dying via __assert_rtn func=%s file=%s:%d expr=%s",
+        func ?: "?", file ?: "?", line, expr ?: "?"]);
+    NSLog(@"[Shadow/SMBC] blocked __assert_rtn %s:%d %s", file, line, expr);
+}
+
+// smbc40: heartbeat thread. Writes "tick N" every 100ms so we can see
+// exactly how long the process survives after CTOR_REACHED. The last
+// tick number before death tells us elapsed survival time, and any log
+// entries between two ticks are the events leading up to the kill.
+static void* shadowhook_smbc_heartbeat_thread(void* arg) {
+    (void)arg;
+    int n = 0;
+    while (1) {
+        usleep(100 * 1000);  // 100ms
+        smbc24_diag([NSString stringWithFormat:@"tick %d", n++]);
+    }
+    return NULL;
 }
 
 void shadowhook_smbc_terminators(HKSubstitutor* hooks) {
@@ -798,6 +854,48 @@ void shadowhook_smbc_terminators(HKSubstitutor* hooks) {
     // _objc_terminate -> abort.
     NSSetUncaughtExceptionHandler(&shadowhook_smbc_uncaught_exc);
     smbc24_diag(@"INSTALL: NSUncaughtExceptionHandler");
+
+    // smbc40: -[NSException raise] (instance method, no format). Separate
+    // selector from class method +raise:format: — must hook independently.
+    {
+        Class cls = [NSException class];
+        SEL sel = @selector(raise);
+        Method m = class_getInstanceMethod(cls, sel);
+        if (m) {
+            shadowhook_smbc_orig_nsexception_irraise =
+                (shadowhook_smbc_nsexc_irraise_imp_t)method_getImplementation(m);
+            method_setImplementation(m, (IMP)shadowhook_smbc_nsexception_irraise_replacement);
+            smbc24_diag(@"INSTALL: -[NSException raise]");
+        }
+    }
+
+    // smbc40: objc_exception_throw — low-level libobjc throw entry.
+    {
+        void* sym = dlsym(RTLD_DEFAULT, "objc_exception_throw");
+        if (sym) {
+            MSHookFunction(sym, (void*)shadowhook_smbc_block_objc_throw,
+                           (void**)&shadowhook_smbc_orig_objc_throw);
+            smbc24_diag(@"INSTALL: objc_exception_throw");
+        }
+    }
+
+    // smbc40: __assert_rtn — BSD assert.
+    {
+        void* sym = dlsym(RTLD_DEFAULT, "__assert_rtn");
+        if (sym) {
+            MSHookFunction(sym, (void*)shadowhook_smbc_block_assert_rtn,
+                           (void**)&shadowhook_smbc_orig_assert_rtn);
+            smbc24_diag(@"INSTALL: __assert_rtn");
+        }
+    }
+
+    // smbc40: heartbeat thread — survival time tracker.
+    {
+        pthread_t hb;
+        pthread_create(&hb, NULL, shadowhook_smbc_heartbeat_thread, NULL);
+        pthread_detach(hb);
+        smbc24_diag(@"INSTALL: heartbeat thread (100ms)");
+    }
 
     NSLog(@"[Shadow/SMBC] terminator chain blocked");
 }
