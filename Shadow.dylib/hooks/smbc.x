@@ -19,6 +19,8 @@
 #import <stdlib.h>
 #import <mach/vm_map.h>
 #import <mach/vm_statistics.h>
+#import <mach-o/dyld.h>
+#import <string.h>
 
 // ---------- diagnostics (smbc24) ----------
 //
@@ -873,7 +875,79 @@ static void shadowhook_smbc_install_null_page(void) {
     smbc24_diag(@"INSTALL: NULL page mapped read-only at 0x0..0x4000");
 }
 
+// smbc47: hook UIBank_PRO main exe's two Swift JB-detection functions
+// directly, replacing them with a stub that returns 0 (false). The
+// disassembly identified two functions:
+//   - file offset 0x7afd0c — contains 5 +[NSException raise:format:]
+//     calls with name "EcnaIN+rtCjxmB8V" (the obfuscated exception
+//     name observed in our logs). 0xBA8 bytes / ~744 instructions.
+//   - file offset 0x7b7824 — contains 2 raises with name
+//     "fa/YjnlinS4WfJ1R33X27xCowx". 0x650 bytes.
+// Both are reached via Swift function-pointer / witness-table dispatch
+// (BR x16). Neither registered in __objc_methlist, so we cannot use
+// the ObjC method-replacement path — must hook by absolute address.
+//
+// The stub is a naked function: MOV X0, #0; RET. ABI-agnostic — works
+// for Swift Bool/void/Optional<T>/AnyObject? since Swift always uses
+// x0 for the return value (and primary self register in legacy Swift)
+// and we don't touch the stack so callers' frame is undisturbed.
+__attribute__((naked, used))
+static int shadowhook_smbc_jbcheck_returns_false(void) {
+    __asm__ volatile(
+        "mov x0, #0\n"
+        "ret\n"
+    );
+}
+
+static void shadowhook_smbc_install_jbcheck_hooks(void) {
+    static const struct {
+        const char* name_substr;
+        uintptr_t offsets[2];
+    } targets = {
+        "UIBank_PRO",
+        { 0x7afd0c, 0x7b7824 }
+    };
+    uint32_t count = _dyld_image_count();
+    intptr_t slide = 0;
+    const struct mach_header* mh = NULL;
+    const char* matched_name = NULL;
+    for (uint32_t i = 0; i < count; i++) {
+        const char* name = _dyld_get_image_name(i);
+        if (!name) continue;
+        // Match the main exe ("UIBank_PRO" appears in path AND there's no
+        // ".framework/" further along — frameworks named UIBank_PRO would
+        // be unlikely but be defensive).
+        if (strstr(name, "/UIBank_PRO") && !strstr(name, ".framework/")) {
+            mh = _dyld_get_image_header(i);
+            slide = _dyld_get_image_vmaddr_slide(i);
+            matched_name = name;
+            break;
+        }
+    }
+    if (!mh) {
+        smbc24_diag(@"INSTALL: JB-check fns - main exe UIBank_PRO not found in dyld images");
+        return;
+    }
+    smbc24_diag([NSString stringWithFormat:
+        @"INSTALL: matched main exe %s base=%p slide=0x%lx",
+        matched_name, (void*)mh, (unsigned long)slide]);
+    for (int i = 0; i < (int)(sizeof(targets.offsets)/sizeof(targets.offsets[0])); i++) {
+        void* target = (void*)((uintptr_t)mh + targets.offsets[i]);
+        void* orig = NULL;
+        MSHookFunction(target,
+            (void*)shadowhook_smbc_jbcheck_returns_false, &orig);
+        smbc24_diag([NSString stringWithFormat:
+            @"INSTALL: JB-check fn[%d] @ %p (file offset 0x%lx)",
+            i, target, (unsigned long)targets.offsets[i]]);
+    }
+}
+
 void shadowhook_smbc_terminators(HKSubstitutor* hooks) {
+    // smbc47: hook the two Swift JB-detection functions in UIBank_PRO
+    // before installing the exception swallowers — if the hooks succeed,
+    // the swallowers should never need to fire.
+    shadowhook_smbc_install_jbcheck_hooks();
+
     // smbc45: install NULL page first, before anything else can fault.
     shadowhook_smbc_install_null_page();
 
