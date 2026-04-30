@@ -583,13 +583,51 @@ static void* shadowhook_smbc_exception_thread(void* arg) {
         NSLog(@"[Shadow/SMBC] caught Mach exc=%d code=0x%llx",
               msg.exception, (long long)msg.code[0]);
 
-        // Advance trapping thread's PC by 4 bytes (size of arm64 BRK).
         arm_thread_state64_t state;
         mach_msg_type_number_t state_count = ARM_THREAD_STATE64_COUNT;
         if (thread_get_state(msg.thread.name, ARM_THREAD_STATE64,
                 (thread_state_t)&state, &state_count) == KERN_SUCCESS) {
             uint64_t pc = (uint64_t)arm_thread_state64_get_pc(state);
-            arm_thread_state64_set_pc_fptr(state, (void(*)(void))(pc + 4));
+            // smbc43: when PC is in NULL-page territory, "advance PC by 4"
+            // just hits more NULL pages forever. The faulting thread is
+            // stuck because raise:format: caller's __noreturn assumption
+            // sent it branching to garbage. Instead, force a stack-frame
+            // pop: load saved x29/x30 from the current frame pointer and
+            // RET to the caller of the function we're stuck in. This is
+            // the equivalent of inserting an early `ret` into the JB-
+            // detection function so its caller (likely application init)
+            // resumes normally.
+            if (pc < 0x10000) {
+                uint64_t fp = (uint64_t)arm_thread_state64_get_fp(state);
+                if (fp >= 0x10000 && (fp & 0x7) == 0) {
+                    uint64_t saved_x29 = ((uint64_t*)fp)[0];
+                    uint64_t saved_x30_signed = ((uint64_t*)fp)[1];
+                    // Strip PAC if present (arm64e). The signed return
+                    // address occupies the low canonical bits — masking
+                    // matches what ptrauth_strip with key_a does.
+                    void* stripped = ptrauth_strip((void*)saved_x30_signed,
+                        ptrauth_key_function_pointer);
+                    smbc24_diag([NSString stringWithFormat:
+                        @"smbc43 pop: pc=0x%llx fp=0x%llx -> ret=0x%llx",
+                        pc, fp, (long long)(uintptr_t)stripped]);
+                    arm_thread_state64_set_fp(state, saved_x29);
+                    arm_thread_state64_set_sp(state, fp + 16);
+                    arm_thread_state64_set_pc_fptr(state,
+                        (void(*)(void))stripped);
+                    arm_thread_state64_set_lr_fptr(state,
+                        (void(*)(void))stripped);
+                } else {
+                    smbc24_diag([NSString stringWithFormat:
+                        @"smbc43 pop SKIP: pc=0x%llx fp=0x%llx invalid",
+                        pc, fp]);
+                    arm_thread_state64_set_pc_fptr(state,
+                        (void(*)(void))(pc + 4));
+                }
+            } else {
+                // Normal advance for non-NULL faults (e.g. BRK traps).
+                arm_thread_state64_set_pc_fptr(state,
+                    (void(*)(void))(pc + 4));
+            }
             thread_set_state(msg.thread.name, ARM_THREAD_STATE64,
                 (thread_state_t)&state, state_count);
         }
