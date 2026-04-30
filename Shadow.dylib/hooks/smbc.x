@@ -25,6 +25,7 @@
 #import <errno.h>
 #import <stdarg.h>
 #import <stdio.h>
+#import <sys/stat.h>
 
 // ---------- diagnostics (smbc24) ----------
 //
@@ -894,8 +895,6 @@ static int (*shadowhook_smbc_orig_sysctlbyname)(const char*, void*, size_t*, voi
 static int shadowhook_smbc_block_sysctlbyname(
     const char* name, void* oldp, size_t* oldlenp, void* newp, size_t newlen) {
     int rv = shadowhook_smbc_orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
-    smbc24_diag([NSString stringWithFormat:
-        @"FIRE: sysctlbyname name=%s rv=%d", name ?: "(null)", rv]);
     if (rv == 0 && oldp && oldlenp && name) {
         // Anti-debug pattern: query KERN_PROC for current pid then check
         // p_flag for P_TRACED (0x800). Clear that flag so the app sees
@@ -907,7 +906,9 @@ static int shadowhook_smbc_block_sysctlbyname(
                 int* pflag = (int*)((char*)oldp + 32);
                 if (*pflag & 0x800) {
                     *pflag &= ~0x800;
-                    smbc24_diag(@"  (cleared P_TRACED in kern.proc.pid result)");
+                    smbc24_diag([NSString stringWithFormat:
+                        @"FIRE: sysctlbyname(%s) — cleared P_TRACED",
+                        name]);
                 }
             }
         }
@@ -916,6 +917,7 @@ static int shadowhook_smbc_block_sysctlbyname(
         if (strcmp(name, "security.mac.amfi.dev_signed") == 0
             && *oldlenp >= 4) {
             *(int*)oldp = 0;
+            smbc24_diag(@"FIRE: sysctlbyname amfi.dev_signed -> 0 (lied)");
         }
     }
     return rv;
@@ -941,41 +943,47 @@ static int shadowhook_smbc_block_sysctl(
     return rv;
 }
 
+// smbc50: previous needle list was too broad. "jbroot-" matched the user's
+// own roothide-managed Documents/AppGroup container path, so EVERY file
+// access from the app got denied — including its own data — which crashed
+// the app within a second. roothide-specific path prefixes (jbroot-,
+// roothide) are SYSTEM-WIDE, not JB indicators. Same for unanchored
+// substrings like "frida" / "Frida" / "FRIDA" which can collide with
+// app names. Restrict needles to absolute JB-tool paths only.
 static BOOL shadowhook_smbc_path_looks_jb(const char* p) {
     if (!p) return NO;
     static const char* needles[] = {
-        "/var/jb",
-        "/private/var/jb",
-        "/Applications/Cydia",
-        "/Applications/Sileo",
-        "/Applications/Zebra",
-        "/usr/lib/libsubstrate",
-        "/usr/lib/MobileSubstrate",
-        "/usr/lib/substitute-",
-        "/usr/lib/libhooker",
-        "/Library/MobileSubstrate",
+        // Classic JB filesystem layouts (absolute paths only).
+        "/Applications/Cydia.app",
+        "/Applications/Sileo.app",
+        "/Applications/Zebra.app",
+        "/Applications/Filza.app",
+        "/usr/lib/libsubstrate.dylib",
+        "/usr/lib/libsubstitute.dylib",
+        "/usr/lib/libhooker.dylib",
+        "/usr/lib/TweakInject.dylib",
+        "/Library/MobileSubstrate/MobileSubstrate.dylib",
+        "/Library/MobileSubstrate/DynamicLibraries",
         "/Library/Frameworks/CydiaSubstrate.framework",
-        "/var/lib/apt",
-        "/var/lib/cydia",
-        "/private/var/lib/apt",
-        "/private/var/lib/cydia",
-        "/var/cache/apt",
-        "/usr/sbin/sshd",
-        "/etc/apt",
-        "/bin/bash",
-        "/usr/libexec/sftp-server",
+        "/Library/PreferenceLoader",
+        "/Library/Activator",
+        "/var/lib/apt/",
+        "/var/lib/cydia/",
+        "/var/cache/apt/",
+        "/private/var/lib/apt/",
+        "/private/var/lib/cydia/",
+        "/etc/apt/",
         "/var/checkra1n.dmg",
         "/.bootstrapped_electra",
         "/.installed_unc0ver",
-        "/jb",
-        "roothide",
-        "jbroot-",
-        "/var/jbroot-",
-        "frida",
-        "Frida",
-        "FRIDA",
-        "MobileSubstrate",
+        // Frida agent paths (anchored).
+        "/usr/sbin/frida-server",
+        "/usr/local/frida-server",
+        "/var/usr/lib/frida",
+        // URL schemes (only checked when caller uses these as strings).
         "cydia://",
+        "sileo://",
+        "filza://",
         NULL
     };
     for (int i = 0; needles[i]; i++) {
@@ -993,6 +1001,28 @@ static int shadowhook_smbc_block_access(const char* path, int amode) {
         return -1;
     }
     return shadowhook_smbc_orig_access(path, amode);
+}
+
+static int (*shadowhook_smbc_orig_stat)(const char*, struct stat*) = NULL;
+static int shadowhook_smbc_block_stat(const char* path, struct stat* buf) {
+    if (shadowhook_smbc_path_looks_jb(path)) {
+        smbc24_diag([NSString stringWithFormat:
+            @"FIRE: stat(%s) -> ENOENT (lied)", path]);
+        errno = 2;
+        return -1;
+    }
+    return shadowhook_smbc_orig_stat(path, buf);
+}
+
+static int (*shadowhook_smbc_orig_lstat)(const char*, struct stat*) = NULL;
+static int shadowhook_smbc_block_lstat(const char* path, struct stat* buf) {
+    if (shadowhook_smbc_path_looks_jb(path)) {
+        smbc24_diag([NSString stringWithFormat:
+            @"FIRE: lstat(%s) -> ENOENT (lied)", path]);
+        errno = 2;
+        return -1;
+    }
+    return shadowhook_smbc_orig_lstat(path, buf);
 }
 
 static int (*shadowhook_smbc_orig_open)(const char*, int, ...) = NULL;
@@ -1086,6 +1116,38 @@ static int shadowhook_smbc_block_dladdr(const void* addr, Dl_info* info) {
     return rv;
 }
 
+// smbc50: NSFileManager fileExistsAtPath: — most common ObjC file check.
+typedef BOOL (*shadowhook_smbc_fexists_imp_t)(id, SEL, NSString*);
+static shadowhook_smbc_fexists_imp_t shadowhook_smbc_orig_fexists = NULL;
+static BOOL shadowhook_smbc_block_fexists(id self, SEL _cmd, NSString* path) {
+    if (path) {
+        const char* cpath = [path UTF8String];
+        if (shadowhook_smbc_path_looks_jb(cpath)) {
+            smbc24_diag([NSString stringWithFormat:
+                @"FIRE: -[NSFileManager fileExistsAtPath:%@] -> NO (lied)",
+                path]);
+            return NO;
+        }
+    }
+    return shadowhook_smbc_orig_fexists(self, _cmd, path);
+}
+
+typedef BOOL (*shadowhook_smbc_fexists_isdir_imp_t)(id, SEL, NSString*, BOOL*);
+static shadowhook_smbc_fexists_isdir_imp_t shadowhook_smbc_orig_fexists_isdir = NULL;
+static BOOL shadowhook_smbc_block_fexists_isdir(id self, SEL _cmd, NSString* path, BOOL* isDir) {
+    if (path) {
+        const char* cpath = [path UTF8String];
+        if (shadowhook_smbc_path_looks_jb(cpath)) {
+            smbc24_diag([NSString stringWithFormat:
+                @"FIRE: -[NSFileManager fileExistsAtPath:%@ isDir:] -> NO (lied)",
+                path]);
+            if (isDir) *isDir = NO;
+            return NO;
+        }
+    }
+    return shadowhook_smbc_orig_fexists_isdir(self, _cmd, path, isDir);
+}
+
 static void shadowhook_smbc_install_probe_hooks(HKSubstitutor* hooks) {
     void* sym;
     sym = dlsym(RTLD_DEFAULT, "sysctlbyname");
@@ -1105,6 +1167,39 @@ static void shadowhook_smbc_install_probe_hooks(HKSubstitutor* hooks) {
         MSHookFunction(sym, (void*)shadowhook_smbc_block_access,
                        (void**)&shadowhook_smbc_orig_access);
         smbc24_diag(@"INSTALL: access");
+    }
+    sym = dlsym(RTLD_DEFAULT, "stat");
+    if (sym) {
+        MSHookFunction(sym, (void*)shadowhook_smbc_block_stat,
+                       (void**)&shadowhook_smbc_orig_stat);
+        smbc24_diag(@"INSTALL: stat");
+    }
+    sym = dlsym(RTLD_DEFAULT, "lstat");
+    if (sym) {
+        MSHookFunction(sym, (void*)shadowhook_smbc_block_lstat,
+                       (void**)&shadowhook_smbc_orig_lstat);
+        smbc24_diag(@"INSTALL: lstat");
+    }
+    {
+        Class cls = NSClassFromString(@"NSFileManager");
+        if (cls) {
+            SEL sel = @selector(fileExistsAtPath:);
+            Method m = class_getInstanceMethod(cls, sel);
+            if (m) {
+                shadowhook_smbc_orig_fexists =
+                    (shadowhook_smbc_fexists_imp_t)method_getImplementation(m);
+                method_setImplementation(m, (IMP)shadowhook_smbc_block_fexists);
+                smbc24_diag(@"INSTALL: -[NSFileManager fileExistsAtPath:]");
+            }
+            sel = @selector(fileExistsAtPath:isDirectory:);
+            m = class_getInstanceMethod(cls, sel);
+            if (m) {
+                shadowhook_smbc_orig_fexists_isdir =
+                    (shadowhook_smbc_fexists_isdir_imp_t)method_getImplementation(m);
+                method_setImplementation(m, (IMP)shadowhook_smbc_block_fexists_isdir);
+                smbc24_diag(@"INSTALL: -[NSFileManager fileExistsAtPath:isDirectory:]");
+            }
+        }
     }
     sym = dlsym(RTLD_DEFAULT, "open");
     if (sym) {
