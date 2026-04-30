@@ -1005,6 +1005,16 @@ static int shadowhook_smbc_block_sysctl(
 static BOOL shadowhook_smbc_path_looks_jb(const char* p) {
     if (!p) return NO;
     static const char* needles[] = {
+        // smbc54: roothide redirects "/var/jb/..." accesses to
+        // "/var/containers/Bundle/Application/.jbroot-XXX/var/jb/..."
+        // Both forms appear in app traces. The trailing slash on
+        // "/var/jb/" prevents matching "/var/jbroot-" (the system's
+        // legitimate jailbreak-root container marker, used as a path
+        // prefix for ALL roothide-managed apps' data — was the bug
+        // in smbc49 that crashed every file access). UI Bank queries
+        // this layer to detect known JB tweaks like VCamPlus.
+        "/var/jb/",
+        "/private/var/jb/",
         // Classic JB filesystem layouts (absolute paths only).
         "/Applications/Cydia.app",
         "/Applications/Sileo.app",
