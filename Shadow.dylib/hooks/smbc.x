@@ -2029,23 +2029,47 @@ static id shadowhook_uibank_fircls_begin_replacement(
     return @{};
 }
 
-// smbc66: hook +[FIROptions defaultOptions] to confirm the smbc63 hypothesis
-// that the 5 obfuscated Swift force-unwrap raises are caused by Firebase
-// init failing — specifically, defaultOptions returning nil. We call the
-// original and log the result class. If nil, the hypothesis is confirmed
-// and the next step is to construct a valid FIROptions object manually.
+// smbc66/68: hook +[FIROptions defaultOptions]. smbc66 confirmed the
+// hypothesis (returns nil). smbc67 added an NSBundle bundle-whitelist
+// to fix the upstream pathForResource breakage but defaultOptions
+// still came back nil — likely because Firebase calls it during early
+// init (FIRApp +load / static ctor) BEFORE our shadow.dylib's hooks
+// are in place, the dispatch_once block caches nil, and every
+// subsequent call returns the cache regardless of what we fix.
+//
+// smbc68: bypass the cache entirely. Build a fresh FIROptions from
+// the plist on every call. Use [FIROptions alloc] +
+// initInternalWithOptionsDictionary: which is what the dispatch_once
+// path itself uses.
 typedef id (*shadowhook_uibank_fir_defopts_imp_t)(Class, SEL);
 static shadowhook_uibank_fir_defopts_imp_t shadowhook_uibank_orig_fir_defopts = NULL;
+static id shadowhook_uibank_fir_defopts_cached = nil;
 static id shadowhook_uibank_fir_defopts_replacement(Class self, SEL _cmd) {
-    id rv = shadowhook_uibank_orig_fir_defopts(self, _cmd);
+    if (shadowhook_uibank_fir_defopts_cached) {
+        return shadowhook_uibank_fir_defopts_cached;
+    }
+    NSString* plistPath = [[NSBundle mainBundle]
+        pathForResource:@"GoogleService-Info" ofType:@"plist"];
+    NSDictionary* dict = plistPath
+        ? [NSDictionary dictionaryWithContentsOfFile:plistPath]
+        : nil;
+    id rv = nil;
+    if (dict) {
+        SEL initSel = NSSelectorFromString(@"initInternalWithOptionsDictionary:");
+        id alloc = [(Class)self alloc];
+        if (alloc && [alloc respondsToSelector:initSel]) {
+            // ABI: instance method taking one id, returning id.
+            rv = ((id (*)(id, SEL, NSDictionary*))objc_msgSend)(
+                alloc, initSel, dict);
+        }
+    }
+    smbc24_diag([NSString stringWithFormat:
+        @"FIRE: defaultOptions REBUILD plist=%@ dict_keys=%lu rv=%@",
+        plistPath ?: @"(nil)",
+        (unsigned long)[dict count],
+        rv ?: @"(nil)"]);
     if (rv) {
-        smbc24_diag([NSString stringWithFormat:
-            @"FIRE: defaultOptions -> %@ class=%@ apikey=%@",
-            rv, NSStringFromClass([rv class]),
-            [rv respondsToSelector:NSSelectorFromString(@"APIKey")]
-                ? [rv valueForKey:@"APIKey"] : @"(no-prop)"]);
-    } else {
-        smbc24_diag(@"FIRE: defaultOptions -> nil — Firebase init will cascade-fail");
+        shadowhook_uibank_fir_defopts_cached = rv;  // simple cache
     }
     return rv;
 }
