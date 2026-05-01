@@ -2057,6 +2057,42 @@ static id shadowhook_uibank_fircls_begin_replacement(
     return @{};
 }
 
+// smbc80: hook strlen / strnlen to gracefully handle NULL argument.
+// After smbc78 patched out raise 6, downstream code (Firebase Swift,
+// Foundation runtime) keeps invoking strlen on options properties that
+// are now nil, segfaulting at _platform_strlen with badaddr=0x0. The
+// Mach handler swallows the worker-thread crashes but main-thread UI
+// init still fails. Hooking strlen to return 0 for NULL lets the
+// callers see "empty string" instead of crashing — matches what would
+// have happened if the option was actually empty in the plist.
+static size_t (*shadowhook_smbc_orig_strlen)(const char*) = NULL;
+static size_t shadowhook_smbc_block_strlen(const char* s) {
+    if (!s) return 0;
+    return shadowhook_smbc_orig_strlen(s);
+}
+static size_t (*shadowhook_smbc_orig_strnlen)(const char*, size_t) = NULL;
+static size_t shadowhook_smbc_block_strnlen(const char* s, size_t n) {
+    if (!s) return 0;
+    return shadowhook_smbc_orig_strnlen(s, n);
+}
+
+static void shadowhook_smbc_install_safe_strlen(void) {
+    static int done = 0; if (done) return;
+    void* sym = dlsym(RTLD_DEFAULT, "strlen");
+    if (sym) {
+        MSHookFunction(sym, (void*)shadowhook_smbc_block_strlen,
+                       (void**)&shadowhook_smbc_orig_strlen);
+        smbc24_diag(@"INSTALL: strlen NULL-safe");
+    }
+    sym = dlsym(RTLD_DEFAULT, "strnlen");
+    if (sym) {
+        MSHookFunction(sym, (void*)shadowhook_smbc_block_strnlen,
+                       (void**)&shadowhook_smbc_orig_strnlen);
+        smbc24_diag(@"INSTALL: strnlen NULL-safe");
+    }
+    done = 1;
+}
+
 // smbc77: binary-patch the cbz at file_off 0x7b7b70 in UIBank_PRO main
 // exe to an unconditional branch with the same target. This bypasses
 // raise 6 (Firebase Installations APIKey format error) entirely without
@@ -2490,6 +2526,9 @@ static BOOL shadowhook_uibank_install_once(void) {
 
     // smbc77: binary patch cbz at 0x7b7b70 to skip raise 6 always
     shadowhook_uibank_install_uibank_patch();
+
+    // smbc80: install NULL-safe strlen/strnlen
+    shadowhook_smbc_install_safe_strlen();
 
     // smbc76: walk all loaded classes, hook every -validateAPIKey:
     // instance method to NOP. smbc75 hooked=0 because the implementing
