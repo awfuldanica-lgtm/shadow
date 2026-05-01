@@ -2086,19 +2086,27 @@ static void shadowhook_uibank_install_uibank_patch(void) {
             target, before]);
         return;
     }
-    // mprotect the page
+    // smbc77 v2: iOS denies plain mprotect RW on __TEXT pages.
+    // Use Mach vm_protect with VM_PROT_COPY (creates a private CoW
+    // copy of the page that we can then write to). This is the same
+    // technique used by HookKit / MSHookFunction internally.
     long page_sz = sysconf(_SC_PAGESIZE);
     uintptr_t page_start = target & ~(page_sz - 1);
-    if (mprotect((void*)page_start, page_sz, PROT_READ | PROT_WRITE) != 0) {
+    vm_address_t addr = (vm_address_t)page_start;
+    kern_return_t kr = vm_protect(mach_task_self(), addr, page_sz, FALSE,
+        VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+    if (kr != KERN_SUCCESS) {
         smbc24_diag([NSString stringWithFormat:
-            @"smbc77: mprotect RW failed errno=%d", errno]);
+            @"smbc77: vm_protect RW|COPY failed kr=%d", kr]);
         return;
     }
     *word = 0x1400001c;  // b +0x70
     sys_icache_invalidate((void*)target, 4);
-    if (mprotect((void*)page_start, page_sz, PROT_READ | PROT_EXEC) != 0) {
+    kr = vm_protect(mach_task_self(), addr, page_sz, FALSE,
+        VM_PROT_READ | VM_PROT_EXECUTE);
+    if (kr != KERN_SUCCESS) {
         smbc24_diag([NSString stringWithFormat:
-            @"smbc77: mprotect RX failed errno=%d (still patched)", errno]);
+            @"smbc77: vm_protect RX failed kr=%d (still patched)", kr]);
     }
     patched = 1;
     smbc24_diag([NSString stringWithFormat:
