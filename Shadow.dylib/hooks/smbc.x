@@ -1261,6 +1261,40 @@ static int shadowhook_smbc_block_dladdr(const void* addr, Dl_info* info) {
     return rv;
 }
 
+// smbc62: task_info(mach_task_self(), TASK_DYLD_INFO, ...) returns the
+// address of dyld_all_image_infos — a kernel-exposed structure with the
+// complete list of loaded mach_headers and their imageFilePath strings.
+// Apps that scan this directly bypass _dyld_image_count entirely. UI
+// Bank's main exe references task_info 2x and mach_task_self 2x. To
+// block the inventory-style JB detection, we return KERN_FAILURE
+// specifically for the TASK_DYLD_INFO flavor and pass every other
+// flavor through unchanged. TASK_DYLD_INFO is flavor 17. The struct
+// task_dyld_info has count TASK_DYLD_INFO_COUNT; we don't touch the
+// out buffer when failing.
+//
+// Risk: legitimate callers (Crashlytics, profilers, lldb) ask for
+// TASK_DYLD_INFO. Returning failure may degrade their function but
+// shouldn't crash — they generally check the kern_return_t.
+#include <mach/task.h>
+#include <mach/task_info.h>
+#include <mach/mach_init.h>
+
+static atomic_int shadowhook_smbc_trace_n_taskinfo = 0;
+static kern_return_t (*shadowhook_smbc_orig_task_info)(
+    task_name_t, task_flavor_t, task_info_t, mach_msg_type_number_t*) = NULL;
+static kern_return_t shadowhook_smbc_block_task_info(
+    task_name_t target, task_flavor_t flavor,
+    task_info_t info_out, mach_msg_type_number_t* count) {
+    SMBC_TRACE(shadowhook_smbc_trace_n_taskinfo,
+        @"trace: task_info(target=0x%x flavor=%d)", target, flavor);
+    if (flavor == TASK_DYLD_INFO) {
+        smbc24_diag([NSString stringWithFormat:
+            @"FIRE: task_info(TASK_DYLD_INFO) -> KERN_FAILURE (lied)"]);
+        return KERN_FAILURE;
+    }
+    return shadowhook_smbc_orig_task_info(target, flavor, info_out, count);
+}
+
 // smbc60: dyld image enumeration hooks. UI Bank's main exe binary
 // references _dyld_image_count, _dyld_get_image_name,
 // _dyld_get_image_header, _dyld_register_func_for_add_image (verified
@@ -1584,6 +1618,13 @@ static void shadowhook_smbc_install_probe_hooks(HKSubstitutor* hooks) {
         MSHookFunction(sym, (void*)shadowhook_smbc_block_dladdr,
                        (void**)&shadowhook_smbc_orig_dladdr);
         smbc24_diag(@"INSTALL: dladdr");
+    }
+    // smbc62: task_info hook to block TASK_DYLD_INFO inventory.
+    sym = dlsym(RTLD_DEFAULT, "task_info");
+    if (sym) {
+        MSHookFunction(sym, (void*)shadowhook_smbc_block_task_info,
+                       (void**)&shadowhook_smbc_orig_task_info);
+        smbc24_diag(@"INSTALL: task_info");
     }
     // smbc61: dyld_image_* hooks disabled. Trace from smbc60 confirmed
     // _dyld_image_count was never called by UI Bank during startup —
