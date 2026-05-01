@@ -643,9 +643,27 @@ static void* shadowhook_smbc_exception_thread(void* arg) {
             // code[1]=the bad address being accessed. The actual PC is
             // in thread state. Logged PC + FP here so we can see what
             // we are actually faulting on.
+            // smbc79: resolve PC and badaddr to library + symbol via dladdr
+            // so we can identify which framework the BAD_ACCESS originates
+            // in (after smbc78 eliminated all raise:format: events, the
+            // remaining Mach exceptions are downstream PAC failures from
+            // missing Firebase state — we need to know exactly where).
+            Dl_info pc_info; memset(&pc_info, 0, sizeof(pc_info));
+            Dl_info bad_info; memset(&bad_info, 0, sizeof(bad_info));
+            int pc_ok = dladdr((const void*)(uintptr_t)pc, &pc_info);
+            int bad_ok = (msg.code[1] >= 0x100000000) ?
+                dladdr((const void*)(uintptr_t)msg.code[1], &bad_info) : 0;
+            const char* pc_lib = pc_ok && pc_info.dli_fname
+                ? strrchr(pc_info.dli_fname, '/') : NULL;
+            pc_lib = pc_lib ? pc_lib + 1 : (pc_ok ? pc_info.dli_fname : "?");
+            const char* pc_sym = pc_ok && pc_info.dli_sname ? pc_info.dli_sname : "?";
+            const char* bad_lib = bad_ok && bad_info.dli_fname
+                ? strrchr(bad_info.dli_fname, '/') : NULL;
+            bad_lib = bad_lib ? bad_lib + 1 : (bad_ok ? bad_info.dli_fname : "?");
+            const char* bad_sym = bad_ok && bad_info.dli_sname ? bad_info.dli_sname : "?";
             smbc24_diag([NSString stringWithFormat:
-                @"FIRE: Mach state pc=0x%llx fp=0x%llx badaddr=0x%llx",
-                pc, fp, (long long)msg.code[1]]);
+                @"FIRE: Mach state pc=0x%llx (%s+%s) fp=0x%llx badaddr=0x%llx (%s+%s)",
+                pc, pc_lib, pc_sym, fp, (long long)msg.code[1], bad_lib, bad_sym]);
 
             // Pop a stack frame when:
             //   (a) PC is in NULL page (jumped to garbage), OR
