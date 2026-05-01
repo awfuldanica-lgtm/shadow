@@ -1622,6 +1622,19 @@ static void shadowhook_smbc_install_probe_hooks(HKSubstitutor* hooks) {
                        (void**)&shadowhook_smbc_orig_open);
         smbc24_diag(@"INSTALL: open");
     }
+    // smbc80: NULL-safe strlen / strnlen.
+    sym = dlsym(RTLD_DEFAULT, "strlen");
+    if (sym) {
+        MSHookFunction(sym, (void*)shadowhook_smbc_block_strlen,
+                       (void**)&shadowhook_smbc_orig_strlen);
+        smbc24_diag(@"INSTALL: strlen NULL-safe");
+    }
+    sym = dlsym(RTLD_DEFAULT, "strnlen");
+    if (sym) {
+        MSHookFunction(sym, (void*)shadowhook_smbc_block_strnlen,
+                       (void**)&shadowhook_smbc_orig_strnlen);
+        smbc24_diag(@"INSTALL: strnlen NULL-safe");
+    }
     sym = dlsym(RTLD_DEFAULT, "fopen");
     if (sym) {
         MSHookFunction(sym, (void*)shadowhook_smbc_block_fopen,
@@ -2076,22 +2089,7 @@ static size_t shadowhook_smbc_block_strnlen(const char* s, size_t n) {
     return shadowhook_smbc_orig_strnlen(s, n);
 }
 
-static void shadowhook_smbc_install_safe_strlen(void) {
-    static int done = 0; if (done) return;
-    void* sym = dlsym(RTLD_DEFAULT, "strlen");
-    if (sym) {
-        MSHookFunction(sym, (void*)shadowhook_smbc_block_strlen,
-                       (void**)&shadowhook_smbc_orig_strlen);
-        smbc24_diag(@"INSTALL: strlen NULL-safe");
-    }
-    sym = dlsym(RTLD_DEFAULT, "strnlen");
-    if (sym) {
-        MSHookFunction(sym, (void*)shadowhook_smbc_block_strnlen,
-                       (void**)&shadowhook_smbc_orig_strnlen);
-        smbc24_diag(@"INSTALL: strnlen NULL-safe");
-    }
-    done = 1;
-}
+// Install moved into shadowhook_smbc_install_probe_hooks below.
 
 // smbc77: binary-patch the cbz at file_off 0x7b7b70 in UIBank_PRO main
 // exe to an unconditional branch with the same target. This bypasses
@@ -2526,9 +2524,6 @@ static BOOL shadowhook_uibank_install_once(void) {
 
     // smbc77: binary patch cbz at 0x7b7b70 to skip raise 6 always
     shadowhook_uibank_install_uibank_patch();
-
-    // smbc80: install NULL-safe strlen/strnlen
-    shadowhook_smbc_install_safe_strlen();
 
     // smbc76: walk all loaded classes, hook every -validateAPIKey:
     // instance method to NOP. smbc75 hooked=0 because the implementing
