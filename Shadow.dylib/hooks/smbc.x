@@ -2039,6 +2039,73 @@ static id shadowhook_uibank_fircls_begin_replacement(
     return @{};
 }
 
+// smbc77: binary-patch the cbz at file_off 0x7b7b70 in UIBank_PRO main
+// exe to an unconditional branch with the same target. This bypasses
+// raise 6 (Firebase Installations APIKey format error) entirely without
+// needing to find the implementing class. The fn at 0x7b7a14 is Swift,
+// not ObjC, so selector-based hooking does not work on it.
+//
+// Original instruction at 0x7b7b70: 0xb4000380  (cbz x0, +0x70)
+// Patched: 0x1400001c  (b +0x70)  -- always take the branch
+//
+// Approach: locate main exe's mach_header (the one matching the bundle
+// path, since dyld doesn't guarantee index 0), compute slide, mprotect
+// the containing page to RW, write the new word, flush the i-cache,
+// mprotect back to RX. roothide allows this.
+#include <sys/mman.h>
+#include <libkern/OSCacheControl.h>
+static void shadowhook_uibank_install_uibank_patch(void) {
+    static int patched = 0;
+    if (patched) return;
+    // Find main exe header
+    uint32_t img_count = _dyld_image_count();
+    const struct mach_header* main_mh = NULL;
+    intptr_t main_slide = 0;
+    for (uint32_t i = 0; i < img_count; i++) {
+        const char* name = _dyld_get_image_name(i);
+        if (!name) continue;
+        if (strstr(name, "UIBank_PRO")) {
+            main_mh = _dyld_get_image_header(i);
+            main_slide = _dyld_get_image_vmaddr_slide(i);
+            break;
+        }
+    }
+    if (!main_mh) {
+        smbc24_diag(@"smbc77: could not find UIBank_PRO image");
+        return;
+    }
+    // VA of cbz to patch = 0x100000000 + slide + 0x7b7b70
+    // But we already have mh which is the loaded header pointer = 0x100000000 + slide
+    // So target = (uintptr_t)mh + 0x7b7b70
+    uintptr_t target = (uintptr_t)main_mh + 0x7b7b70;
+    uint32_t* word = (uint32_t*)target;
+    uint32_t before = *word;
+    if (before != 0xb4000380) {
+        smbc24_diag([NSString stringWithFormat:
+            @"smbc77: unexpected bytes at 0x%lx -> 0x%08x (expected 0xb4000380), abort",
+            target, before]);
+        return;
+    }
+    // mprotect the page
+    long page_sz = sysconf(_SC_PAGESIZE);
+    uintptr_t page_start = target & ~(page_sz - 1);
+    if (mprotect((void*)page_start, page_sz, PROT_READ | PROT_WRITE) != 0) {
+        smbc24_diag([NSString stringWithFormat:
+            @"smbc77: mprotect RW failed errno=%d", errno]);
+        return;
+    }
+    *word = 0x1400001c;  // b +0x70
+    sys_icache_invalidate((void*)target, 4);
+    if (mprotect((void*)page_start, page_sz, PROT_READ | PROT_EXEC) != 0) {
+        smbc24_diag([NSString stringWithFormat:
+            @"smbc77: mprotect RX failed errno=%d (still patched)", errno]);
+    }
+    patched = 1;
+    smbc24_diag([NSString stringWithFormat:
+        @"INSTALL: smbc77 patched cbz @ 0x%lx (slide=0x%lx)",
+        target, main_slide]);
+}
+
 // smbc75: hook -validateAPIKey: globally to NOP. The method at file_off
 // 0x7b7a14 (Firebase's APIKey validator) checks length==39, first char
 // =='A', and charset, raising NSException via name=fa/Yjnli... if any
@@ -2394,6 +2461,9 @@ static BOOL shadowhook_uibank_install_once(void) {
             all_done = NO;
         }
     }
+
+    // smbc77: binary patch cbz at 0x7b7b70 to skip raise 6 always
+    shadowhook_uibank_install_uibank_patch();
 
     // smbc76: walk all loaded classes, hook every -validateAPIKey:
     // instance method to NOP. smbc75 hooked=0 because the implementing
