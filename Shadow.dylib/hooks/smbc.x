@@ -1563,6 +1563,21 @@ static BOOL shadowhook_smbc_block_fexists_isdir(id self, SEL _cmd, NSString* pat
     return shadowhook_smbc_orig_fexists_isdir(self, _cmd, path, isDir);
 }
 
+// smbc80: hook strlen / strnlen to gracefully handle NULL argument.
+// After smbc78 patched out raise 6, downstream code (Firebase Swift,
+// Foundation runtime) keeps invoking strlen on options properties that
+// are now nil, segfaulting at _platform_strlen with badaddr=0x0.
+static size_t (*shadowhook_smbc_orig_strlen)(const char*) = NULL;
+static size_t shadowhook_smbc_block_strlen(const char* s) {
+    if (!s) return 0;
+    return shadowhook_smbc_orig_strlen(s);
+}
+static size_t (*shadowhook_smbc_orig_strnlen)(const char*, size_t) = NULL;
+static size_t shadowhook_smbc_block_strnlen(const char* s, size_t n) {
+    if (!s) return 0;
+    return shadowhook_smbc_orig_strnlen(s, n);
+}
+
 static void shadowhook_smbc_install_probe_hooks(HKSubstitutor* hooks) {
     void* sym;
     sym = dlsym(RTLD_DEFAULT, "sysctlbyname");
@@ -2070,26 +2085,8 @@ static id shadowhook_uibank_fircls_begin_replacement(
     return @{};
 }
 
-// smbc80: hook strlen / strnlen to gracefully handle NULL argument.
-// After smbc78 patched out raise 6, downstream code (Firebase Swift,
-// Foundation runtime) keeps invoking strlen on options properties that
-// are now nil, segfaulting at _platform_strlen with badaddr=0x0. The
-// Mach handler swallows the worker-thread crashes but main-thread UI
-// init still fails. Hooking strlen to return 0 for NULL lets the
-// callers see "empty string" instead of crashing — matches what would
-// have happened if the option was actually empty in the plist.
-static size_t (*shadowhook_smbc_orig_strlen)(const char*) = NULL;
-static size_t shadowhook_smbc_block_strlen(const char* s) {
-    if (!s) return 0;
-    return shadowhook_smbc_orig_strlen(s);
-}
-static size_t (*shadowhook_smbc_orig_strnlen)(const char*, size_t) = NULL;
-static size_t shadowhook_smbc_block_strnlen(const char* s, size_t n) {
-    if (!s) return 0;
-    return shadowhook_smbc_orig_strnlen(s, n);
-}
-
-// Install moved into shadowhook_smbc_install_probe_hooks below.
+// smbc80 functions moved to before shadowhook_smbc_install_probe_hooks
+// (their forward declarations need to be visible at that install site).
 
 // smbc77: binary-patch the cbz at file_off 0x7b7b70 in UIBank_PRO main
 // exe to an unconditional branch with the same target. This bypasses
