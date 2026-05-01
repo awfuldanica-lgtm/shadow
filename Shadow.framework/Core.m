@@ -126,12 +126,30 @@
                 return YES;
             }
 
-            // roothide: jailbreak filesystem lives at
-            // /var/containers/Bundle/Application/.jbroot-<hash>/...
-            // (also /private/var/... before getStandardizedPath strips /private)
-            // Treat anything below such a directory as restricted.
-            if([path containsString:@"/.jbroot-"]) {
-                return YES;
+            // smbc82: roothide stores JB content at
+            //   /var/containers/Bundle/Application/.jbroot-<hash>/var/jb/...
+            // BUT also surfaces legitimate app sandbox paths through
+            //   /var/containers/Bundle/Application/.jbroot-<hash>/var/containers/Bundle/Application/<UUID>/<App>.app/...
+            // (depending on roothide internals after symlink resolution).
+            // The blanket /.jbroot-/ -> restricted check broke legitimate
+            // resource reads — Firebase reading GoogleService-Info.plist via
+            // NSBundle resolved into .jbroot- territory, isPathRestricted
+            // returned YES, plist load failed, FIRApp init cascade-died.
+            // Tighten: only block when the post-.jbroot- tail contains an
+            // actual JB content marker.
+            NSRange jbrootRange = [path rangeOfString:@"/.jbroot-"];
+            if (jbrootRange.location != NSNotFound) {
+                NSString* tail = [path substringFromIndex:NSMaxRange(jbrootRange)];
+                if ([tail containsString:@"/var/jb/"]
+                    || [tail containsString:@"/Library/MobileSubstrate"]
+                    || [tail containsString:@"/Applications/Cydia.app"]
+                    || [tail containsString:@"/Applications/Sileo.app"]
+                    || [tail containsString:@"/Applications/Filza.app"]
+                    || [tail containsString:@"/Applications/Zebra.app"]) {
+                    return YES;
+                }
+                // Otherwise the path is just legitimate app data routed
+                // through the .jbroot- symlink — let it through.
             }
 
             // roothide: the systemhook injector dylib is at the literal path
