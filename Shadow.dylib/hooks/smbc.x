@@ -2186,7 +2186,13 @@ static BOOL shadowhook_uibank_install_once(void) {
     // from this method) was almost certainly a downstream cascade from
     // some OTHER bypass we had at the time, not a JB-detection trap on
     // the method itself.
-    if (0 && !shadowhook_uibank_orig_fircls_begin) {
+    // smbc65: revert smbc64 — re-enable NOP. Without it, Firebase tries
+    // real init (network/main-thread-blocking work), iOS watchdog kills
+    // the process. The 6 raise:format: events fire identically regardless
+    // of NOP state, confirming they are NOT caused by our @{} return —
+    // those raises happen independently. The NOP is the right move for
+    // stability; the 6 raises themselves must be addressed elsewhere.
+    if (!shadowhook_uibank_orig_fircls_begin) {
         Class cls = NSClassFromString(@"FIRCLSSettingsManager");
         if (cls) {
             Method m = class_getInstanceMethod(
