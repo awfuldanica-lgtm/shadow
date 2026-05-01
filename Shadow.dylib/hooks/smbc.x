@@ -876,12 +876,22 @@ static void shadowhook_smbc_block_assert_rtn(const char* func, const char* file,
 // exactly how long the process survives after CTOR_REACHED. The last
 // tick number before death tells us elapsed survival time, and any log
 // entries between two ticks are the events leading up to the kill.
+// smbc76: re-run validateAPIKey: swizzle from heartbeat. Forward declare.
+extern void shadowhook_uibank_retry_validateAPIKey_swizzle(void);
+
 static void* shadowhook_smbc_heartbeat_thread(void* arg) {
     (void)arg;
     int n = 0;
     while (1) {
         usleep(100 * 1000);  // 100ms
         smbc24_diag([NSString stringWithFormat:@"tick %d", n++]);
+        // smbc76: every tick, retry the swizzle. The implementing class
+        // for -validateAPIKey: lives in a framework that loads later;
+        // keep retrying until we catch it.
+        if (n < 100) {
+            // Only retry for first 10 seconds — don't burn CPU forever.
+            shadowhook_uibank_retry_validateAPIKey_swizzle();
+        }
     }
     return NULL;
 }
@@ -2044,6 +2054,37 @@ static id shadowhook_uibank_validateAPIKey_replacement(id self, SEL _cmd, id api
     return nil;
 }
 
+// smbc76: heartbeat-callable swizzle pass for -validateAPIKey:.
+void shadowhook_uibank_retry_validateAPIKey_swizzle(void) {
+    SEL sel = NSSelectorFromString(@"validateAPIKey:");
+    int classCount = objc_getClassList(NULL, 0);
+    Class* classes = (Class*)malloc(sizeof(Class) * classCount);
+    classCount = objc_getClassList(classes, classCount);
+    int hooked_now = 0;
+    for (int i = 0; i < classCount; i++) {
+        Class c = classes[i];
+        unsigned int n = 0;
+        Method* methods = class_copyMethodList(c, &n);
+        for (unsigned int j = 0; j < n; j++) {
+            if (method_getName(methods[j]) == sel) {
+                IMP cur = method_getImplementation(methods[j]);
+                if (cur != (IMP)shadowhook_uibank_validateAPIKey_replacement) {
+                    method_setImplementation(methods[j],
+                        (IMP)shadowhook_uibank_validateAPIKey_replacement);
+                    hooked_now++;
+                }
+                break;
+            }
+        }
+        free(methods);
+    }
+    free(classes);
+    if (hooked_now) {
+        smbc24_diag([NSString stringWithFormat:
+            @"INSTALL: -validateAPIKey: NOP retry hooked=%d", hooked_now]);
+    }
+}
+
 // smbc73: hook -[NSCharacterSet isSupersetOfSet:] to always return YES.
 // Raise 6 in fn at 0x7b7bd4 fires when this returns NO during Firebase
 // Installations' APIKey character-set validation (the message being
@@ -2354,36 +2395,43 @@ static BOOL shadowhook_uibank_install_once(void) {
         }
     }
 
-    // smbc75: walk all classes, hook every -validateAPIKey: instance
-    // method to a no-op. The method at 0x7b7a14 raises raise 6 when its
-    // internal checks fail. NOPing the method skips all checks. The
-    // caller at 0x7b79e4 ignores the return value, so returning nil is
-    // safe.
-    static int validateAPIKey_done = 0;
-    if (!validateAPIKey_done) {
+    // smbc76: walk all loaded classes, hook every -validateAPIKey:
+    // instance method to NOP. smbc75 hooked=0 because the implementing
+    // class isn't loaded yet at our CTOR_REACHED phase. Make the swizzle
+    // retry-able from the heartbeat tick (or any later install pass)
+    // until it actually finds the method. Idempotent: once we hook a
+    // class, we skip it on subsequent passes.
+    {
         SEL sel = NSSelectorFromString(@"validateAPIKey:");
         int classCount = objc_getClassList(NULL, 0);
         Class* classes = (Class*)malloc(sizeof(Class) * classCount);
         classCount = objc_getClassList(classes, classCount);
-        int hooked = 0;
+        int hooked_now = 0;
         for (int i = 0; i < classCount; i++) {
             Class c = classes[i];
             unsigned int n = 0;
             Method* methods = class_copyMethodList(c, &n);
             for (unsigned int j = 0; j < n; j++) {
                 if (method_getName(methods[j]) == sel) {
-                    method_setImplementation(methods[j],
-                        (IMP)shadowhook_uibank_validateAPIKey_replacement);
-                    hooked++;
+                    IMP cur = method_getImplementation(methods[j]);
+                    if (cur != (IMP)shadowhook_uibank_validateAPIKey_replacement) {
+                        method_setImplementation(methods[j],
+                            (IMP)shadowhook_uibank_validateAPIKey_replacement);
+                        hooked_now++;
+                    }
                     break;
                 }
             }
             free(methods);
         }
         free(classes);
-        smbc24_diag([NSString stringWithFormat:
-            @"INSTALL: -validateAPIKey: NOP (hooked=%d)", hooked]);
-        validateAPIKey_done = 1;
+        static int validateAPIKey_total_hooked = 0;
+        if (hooked_now) {
+            validateAPIKey_total_hooked += hooked_now;
+            smbc24_diag([NSString stringWithFormat:
+                @"INSTALL: -validateAPIKey: NOP (now=%d total=%d)",
+                hooked_now, validateAPIKey_total_hooked]);
+        }
     }
 
     // smbc74: smbc73 hooked NSCharacterSet but the concrete subclass
