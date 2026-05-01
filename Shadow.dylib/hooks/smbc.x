@@ -2071,13 +2071,26 @@ static id shadowhook_uibank_fir_defopts_replacement(Class self, SEL _cmd) {
         ? [NSDictionary dictionaryWithContentsOfFile:plistPath]
         : nil;
     id rv = nil;
-    if (dict) {
-        SEL initSel = NSSelectorFromString(@"initInternalWithOptionsDictionary:");
+    // smbc71: smbc70 confirmed initInternalWithOptionsDictionary: only
+    // populated APIKey, leaving googleAppID/projectID/GCMSenderID/bundleID
+    // as nil. Use the public initializer -initWithContentsOfFile: which
+    // takes the plist path directly and properly maps every plist key.
+    if (plistPath) {
+        SEL initFile = NSSelectorFromString(@"initWithContentsOfFile:");
         id alloc = [(Class)self alloc];
-        if (alloc && [alloc respondsToSelector:initSel]) {
-            // ABI: instance method taking one id, returning id.
-            rv = ((id (*)(id, SEL, NSDictionary*))objc_msgSend)(
-                alloc, initSel, dict);
+        if (alloc && [alloc respondsToSelector:initFile]) {
+            rv = ((id (*)(id, SEL, NSString*))objc_msgSend)(
+                alloc, initFile, plistPath);
+        }
+        // Fallback: if -initWithContentsOfFile: missing or returned nil,
+        // try the dictionary variant.
+        if (!rv && dict) {
+            SEL initDict = NSSelectorFromString(@"initInternalWithOptionsDictionary:");
+            id alloc2 = [(Class)self alloc];
+            if (alloc2 && [alloc2 respondsToSelector:initDict]) {
+                rv = ((id (*)(id, SEL, NSDictionary*))objc_msgSend)(
+                    alloc2, initDict, dict);
+            }
         }
     }
     NSString* gid_val = nil, *pid_val = nil, *api_val = nil, *gcm_val = nil, *bid_val = nil;
