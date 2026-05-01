@@ -965,6 +965,7 @@ static atomic_int shadowhook_smbc_trace_n_dlopen = 0;
 static atomic_int shadowhook_smbc_trace_n_dlsym = 0;
 static atomic_int shadowhook_smbc_trace_n_dladdr = 0;
 static atomic_int shadowhook_smbc_trace_n_fexists = 0;
+static atomic_int shadowhook_smbc_trace_n_dyldimg = 0;
 
 #define SMBC_TRACE(counter, fmt, ...) do {                  \
     if (shadowhook_smbc_in_hook) break;                     \
@@ -1260,6 +1261,201 @@ static int shadowhook_smbc_block_dladdr(const void* addr, Dl_info* info) {
     return rv;
 }
 
+// smbc60: dyld image enumeration hooks. UI Bank's main exe binary
+// references _dyld_image_count, _dyld_get_image_name,
+// _dyld_get_image_header, _dyld_register_func_for_add_image (verified
+// 2x each in /Desktop/shadow/UIBank_PRO). The app iterates loaded
+// dylibs and any image whose path contains JB markers
+// (Shadow.dylib, TweakLoader.dylib, /var/jb/, libsubstrate.dylib, etc.)
+// signals jailbreak. Strategy: present a filtered view that hides JB
+// images entirely. The keep-list is rebuilt on every image_count call
+// so a subsequent get_image_name(i) sees a stable index space.
+//
+// Important: only invoke smbc24_diag from these hooks INSIDE the
+// SMBC_TRACE re-entry guard (it sets shadowhook_smbc_in_hook). The
+// raw-POSIX writer in smbc57 won't recurse, but the underlying call
+// site iterates *all* dylibs and we don't want each image visit to
+// log a line during normal startup.
+#define SHADOWHOOK_SMBC_DYLD_KEEP_MAX 1024
+static uint32_t shadowhook_smbc_dyld_keep_indices[SHADOWHOOK_SMBC_DYLD_KEEP_MAX];
+static uint32_t shadowhook_smbc_dyld_keep_count = 0;
+static pthread_mutex_t shadowhook_smbc_dyld_mtx;
+static int shadowhook_smbc_dyld_mtx_inited = 0;
+
+static uint32_t (*shadowhook_smbc_orig_dyld_image_count)(void) = NULL;
+static const char* (*shadowhook_smbc_orig_dyld_get_image_name)(uint32_t) = NULL;
+static const struct mach_header*
+    (*shadowhook_smbc_orig_dyld_get_image_header)(uint32_t) = NULL;
+static intptr_t
+    (*shadowhook_smbc_orig_dyld_get_image_vmaddr_slide)(uint32_t) = NULL;
+static void (*shadowhook_smbc_orig_dyld_register_func_for_add_image)(
+    void (*)(const struct mach_header*, intptr_t)) = NULL;
+
+static void shadowhook_smbc_dyld_init_mtx_once(void) {
+    if (!shadowhook_smbc_dyld_mtx_inited) {
+        pthread_mutexattr_t attr;
+        pthread_mutexattr_init(&attr);
+        pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+        pthread_mutex_init(&shadowhook_smbc_dyld_mtx, &attr);
+        pthread_mutexattr_destroy(&attr);
+        shadowhook_smbc_dyld_mtx_inited = 1;
+    }
+}
+
+static void shadowhook_smbc_dyld_rebuild_keep_locked(void) {
+    if (!shadowhook_smbc_orig_dyld_image_count ||
+        !shadowhook_smbc_orig_dyld_get_image_name) {
+        return;
+    }
+    uint32_t real = shadowhook_smbc_orig_dyld_image_count();
+    uint32_t kept = 0;
+    int hidden = 0;
+    for (uint32_t i = 0; i < real && kept < SHADOWHOOK_SMBC_DYLD_KEEP_MAX; i++) {
+        const char* name = shadowhook_smbc_orig_dyld_get_image_name(i);
+        if (!name || !shadowhook_smbc_path_looks_jb(name)) {
+            shadowhook_smbc_dyld_keep_indices[kept++] = i;
+        } else {
+            hidden++;
+            // Log only first time per session per name; bounded by
+            // trace counter to avoid flood.
+            SMBC_TRACE(shadowhook_smbc_trace_n_dyldimg,
+                @"FIRE: dyld image hidden idx=%u %s", i, name);
+        }
+    }
+    shadowhook_smbc_dyld_keep_count = kept;
+    if (hidden) {
+        SMBC_TRACE(shadowhook_smbc_trace_n_dyldimg,
+            @"trace: dyld_image_count real=%u kept=%u hidden=%d",
+            real, kept, hidden);
+    }
+}
+
+static uint32_t shadowhook_smbc_block_dyld_image_count(void) {
+    shadowhook_smbc_dyld_init_mtx_once();
+    pthread_mutex_lock(&shadowhook_smbc_dyld_mtx);
+    shadowhook_smbc_dyld_rebuild_keep_locked();
+    uint32_t c = shadowhook_smbc_dyld_keep_count;
+    pthread_mutex_unlock(&shadowhook_smbc_dyld_mtx);
+    return c;
+}
+
+static const char* shadowhook_smbc_block_dyld_get_image_name(uint32_t i) {
+    shadowhook_smbc_dyld_init_mtx_once();
+    uint32_t real_i = i;
+    pthread_mutex_lock(&shadowhook_smbc_dyld_mtx);
+    if (i < shadowhook_smbc_dyld_keep_count) {
+        real_i = shadowhook_smbc_dyld_keep_indices[i];
+    }
+    pthread_mutex_unlock(&shadowhook_smbc_dyld_mtx);
+    if (!shadowhook_smbc_orig_dyld_get_image_name) return NULL;
+    return shadowhook_smbc_orig_dyld_get_image_name(real_i);
+}
+
+static const struct mach_header*
+shadowhook_smbc_block_dyld_get_image_header(uint32_t i) {
+    shadowhook_smbc_dyld_init_mtx_once();
+    uint32_t real_i = i;
+    pthread_mutex_lock(&shadowhook_smbc_dyld_mtx);
+    if (i < shadowhook_smbc_dyld_keep_count) {
+        real_i = shadowhook_smbc_dyld_keep_indices[i];
+    }
+    pthread_mutex_unlock(&shadowhook_smbc_dyld_mtx);
+    if (!shadowhook_smbc_orig_dyld_get_image_header) return NULL;
+    return shadowhook_smbc_orig_dyld_get_image_header(real_i);
+}
+
+static intptr_t
+shadowhook_smbc_block_dyld_get_image_vmaddr_slide(uint32_t i) {
+    shadowhook_smbc_dyld_init_mtx_once();
+    uint32_t real_i = i;
+    pthread_mutex_lock(&shadowhook_smbc_dyld_mtx);
+    if (i < shadowhook_smbc_dyld_keep_count) {
+        real_i = shadowhook_smbc_dyld_keep_indices[i];
+    }
+    pthread_mutex_unlock(&shadowhook_smbc_dyld_mtx);
+    if (!shadowhook_smbc_orig_dyld_get_image_vmaddr_slide) return 0;
+    return shadowhook_smbc_orig_dyld_get_image_vmaddr_slide(real_i);
+}
+
+// register_func_for_add_image: dyld invokes the supplied callback once
+// per currently-loaded image, then again on every future dlopen. Apps
+// use this for inventory-based JB checks. We wrap the user's callback
+// with a filter that drops invocations for JB images. Multiple
+// callbacks may be registered; track up to 16.
+typedef void (*shadowhook_smbc_dyld_addimg_cb_t)(
+    const struct mach_header*, intptr_t);
+
+#define SHADOWHOOK_SMBC_DYLD_ADDIMG_MAX 16
+static shadowhook_smbc_dyld_addimg_cb_t
+    shadowhook_smbc_dyld_addimg_user[SHADOWHOOK_SMBC_DYLD_ADDIMG_MAX];
+static int shadowhook_smbc_dyld_addimg_count = 0;
+
+#define SHADOWHOOK_SMBC_DYLD_DEFINE_TRAMP(N) \
+static void shadowhook_smbc_dyld_addimg_tramp_##N( \
+    const struct mach_header* mh, intptr_t slide) { \
+    Dl_info info; \
+    if (mh && shadowhook_smbc_orig_dladdr && \
+        shadowhook_smbc_orig_dladdr((const void*)mh, &info) && \
+        info.dli_fname && \
+        shadowhook_smbc_path_looks_jb(info.dli_fname)) { \
+        SMBC_TRACE(shadowhook_smbc_trace_n_dyldimg, \
+            @"FIRE: addimg cb#%d swallowed for %s", N, info.dli_fname); \
+        return; \
+    } \
+    shadowhook_smbc_dyld_addimg_cb_t cb = \
+        shadowhook_smbc_dyld_addimg_user[N]; \
+    if (cb) cb(mh, slide); \
+}
+SHADOWHOOK_SMBC_DYLD_DEFINE_TRAMP(0)
+SHADOWHOOK_SMBC_DYLD_DEFINE_TRAMP(1)
+SHADOWHOOK_SMBC_DYLD_DEFINE_TRAMP(2)
+SHADOWHOOK_SMBC_DYLD_DEFINE_TRAMP(3)
+SHADOWHOOK_SMBC_DYLD_DEFINE_TRAMP(4)
+SHADOWHOOK_SMBC_DYLD_DEFINE_TRAMP(5)
+SHADOWHOOK_SMBC_DYLD_DEFINE_TRAMP(6)
+SHADOWHOOK_SMBC_DYLD_DEFINE_TRAMP(7)
+SHADOWHOOK_SMBC_DYLD_DEFINE_TRAMP(8)
+SHADOWHOOK_SMBC_DYLD_DEFINE_TRAMP(9)
+SHADOWHOOK_SMBC_DYLD_DEFINE_TRAMP(10)
+SHADOWHOOK_SMBC_DYLD_DEFINE_TRAMP(11)
+SHADOWHOOK_SMBC_DYLD_DEFINE_TRAMP(12)
+SHADOWHOOK_SMBC_DYLD_DEFINE_TRAMP(13)
+SHADOWHOOK_SMBC_DYLD_DEFINE_TRAMP(14)
+SHADOWHOOK_SMBC_DYLD_DEFINE_TRAMP(15)
+#undef SHADOWHOOK_SMBC_DYLD_DEFINE_TRAMP
+
+static const shadowhook_smbc_dyld_addimg_cb_t
+    shadowhook_smbc_dyld_addimg_tramp_table[SHADOWHOOK_SMBC_DYLD_ADDIMG_MAX] = {
+    shadowhook_smbc_dyld_addimg_tramp_0,  shadowhook_smbc_dyld_addimg_tramp_1,
+    shadowhook_smbc_dyld_addimg_tramp_2,  shadowhook_smbc_dyld_addimg_tramp_3,
+    shadowhook_smbc_dyld_addimg_tramp_4,  shadowhook_smbc_dyld_addimg_tramp_5,
+    shadowhook_smbc_dyld_addimg_tramp_6,  shadowhook_smbc_dyld_addimg_tramp_7,
+    shadowhook_smbc_dyld_addimg_tramp_8,  shadowhook_smbc_dyld_addimg_tramp_9,
+    shadowhook_smbc_dyld_addimg_tramp_10, shadowhook_smbc_dyld_addimg_tramp_11,
+    shadowhook_smbc_dyld_addimg_tramp_12, shadowhook_smbc_dyld_addimg_tramp_13,
+    shadowhook_smbc_dyld_addimg_tramp_14, shadowhook_smbc_dyld_addimg_tramp_15,
+};
+
+static void shadowhook_smbc_block_dyld_register_func_for_add_image(
+    void (*func)(const struct mach_header*, intptr_t)) {
+    shadowhook_smbc_dyld_init_mtx_once();
+    pthread_mutex_lock(&shadowhook_smbc_dyld_mtx);
+    int idx = shadowhook_smbc_dyld_addimg_count;
+    shadowhook_smbc_dyld_addimg_cb_t tramp = NULL;
+    if (idx < SHADOWHOOK_SMBC_DYLD_ADDIMG_MAX) {
+        shadowhook_smbc_dyld_addimg_user[idx] = func;
+        tramp = shadowhook_smbc_dyld_addimg_tramp_table[idx];
+        shadowhook_smbc_dyld_addimg_count = idx + 1;
+    }
+    pthread_mutex_unlock(&shadowhook_smbc_dyld_mtx);
+    SMBC_TRACE(shadowhook_smbc_trace_n_dyldimg,
+        @"trace: register_func_for_add_image cb=%p slot=%d", func, idx);
+    if (shadowhook_smbc_orig_dyld_register_func_for_add_image) {
+        shadowhook_smbc_orig_dyld_register_func_for_add_image(
+            tramp ? tramp : func);
+    }
+}
+
 // smbc50: NSFileManager fileExistsAtPath: — most common ObjC file check.
 typedef BOOL (*shadowhook_smbc_fexists_imp_t)(id, SEL, NSString*);
 static shadowhook_smbc_fexists_imp_t shadowhook_smbc_orig_fexists = NULL;
@@ -1388,6 +1584,38 @@ static void shadowhook_smbc_install_probe_hooks(HKSubstitutor* hooks) {
         MSHookFunction(sym, (void*)shadowhook_smbc_block_dladdr,
                        (void**)&shadowhook_smbc_orig_dladdr);
         smbc24_diag(@"INSTALL: dladdr");
+    }
+    // smbc60: dyld image enumeration filter.
+    sym = dlsym(RTLD_DEFAULT, "_dyld_image_count");
+    if (sym) {
+        MSHookFunction(sym, (void*)shadowhook_smbc_block_dyld_image_count,
+                       (void**)&shadowhook_smbc_orig_dyld_image_count);
+        smbc24_diag(@"INSTALL: _dyld_image_count");
+    }
+    sym = dlsym(RTLD_DEFAULT, "_dyld_get_image_name");
+    if (sym) {
+        MSHookFunction(sym, (void*)shadowhook_smbc_block_dyld_get_image_name,
+                       (void**)&shadowhook_smbc_orig_dyld_get_image_name);
+        smbc24_diag(@"INSTALL: _dyld_get_image_name");
+    }
+    sym = dlsym(RTLD_DEFAULT, "_dyld_get_image_header");
+    if (sym) {
+        MSHookFunction(sym, (void*)shadowhook_smbc_block_dyld_get_image_header,
+                       (void**)&shadowhook_smbc_orig_dyld_get_image_header);
+        smbc24_diag(@"INSTALL: _dyld_get_image_header");
+    }
+    sym = dlsym(RTLD_DEFAULT, "_dyld_get_image_vmaddr_slide");
+    if (sym) {
+        MSHookFunction(sym, (void*)shadowhook_smbc_block_dyld_get_image_vmaddr_slide,
+                       (void**)&shadowhook_smbc_orig_dyld_get_image_vmaddr_slide);
+        smbc24_diag(@"INSTALL: _dyld_get_image_vmaddr_slide");
+    }
+    sym = dlsym(RTLD_DEFAULT, "_dyld_register_func_for_add_image");
+    if (sym) {
+        MSHookFunction(sym,
+            (void*)shadowhook_smbc_block_dyld_register_func_for_add_image,
+            (void**)&shadowhook_smbc_orig_dyld_register_func_for_add_image);
+        smbc24_diag(@"INSTALL: _dyld_register_func_for_add_image");
     }
 }
 
