@@ -2093,6 +2093,27 @@ static id shadowhook_uibank_fir_defopts_replacement(Class self, SEL _cmd) {
             }
         }
     }
+    // smbc72: neither initInternalWithOptionsDictionary: nor
+    // initWithContentsOfFile: populated the non-APIKey properties under
+    // this Firebase build. Force-assign each field via KVC after init.
+    if (rv && dict) {
+        @try {
+            NSString* val;
+            if ((val = dict[@"GOOGLE_APP_ID"])) [rv setValue:val forKey:@"googleAppID"];
+            if ((val = dict[@"GCM_SENDER_ID"])) [rv setValue:val forKey:@"GCMSenderID"];
+            if ((val = dict[@"PROJECT_ID"])) [rv setValue:val forKey:@"projectID"];
+            if ((val = dict[@"BUNDLE_ID"])) [rv setValue:val forKey:@"bundleID"];
+            if ((val = dict[@"STORAGE_BUCKET"])) [rv setValue:val forKey:@"storageBucket"];
+            if ((val = dict[@"API_KEY"])) [rv setValue:val forKey:@"APIKey"];
+            if ((val = dict[@"CLIENT_ID"])) [rv setValue:val forKey:@"clientID"];
+            if ((val = dict[@"DATABASE_URL"])) [rv setValue:val forKey:@"databaseURL"];
+            if ((val = dict[@"TRACKING_ID"])) [rv setValue:val forKey:@"trackingID"];
+            if ((val = dict[@"DEEP_LINK_SCHEME"])) [rv setValue:val forKey:@"deepLinkURLScheme"];
+        } @catch (NSException* e) {
+            smbc24_diag([NSString stringWithFormat:
+                @"FIRE: defaultOptions setValue threw: %@", e]);
+        }
+    }
     NSString* gid_val = nil, *pid_val = nil, *api_val = nil, *gcm_val = nil, *bid_val = nil;
     if (rv) {
         @try {
