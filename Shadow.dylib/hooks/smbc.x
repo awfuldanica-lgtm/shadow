@@ -1585,38 +1585,19 @@ static void shadowhook_smbc_install_probe_hooks(HKSubstitutor* hooks) {
                        (void**)&shadowhook_smbc_orig_dladdr);
         smbc24_diag(@"INSTALL: dladdr");
     }
-    // smbc60: dyld image enumeration filter.
-    sym = dlsym(RTLD_DEFAULT, "_dyld_image_count");
-    if (sym) {
-        MSHookFunction(sym, (void*)shadowhook_smbc_block_dyld_image_count,
-                       (void**)&shadowhook_smbc_orig_dyld_image_count);
-        smbc24_diag(@"INSTALL: _dyld_image_count");
-    }
-    sym = dlsym(RTLD_DEFAULT, "_dyld_get_image_name");
-    if (sym) {
-        MSHookFunction(sym, (void*)shadowhook_smbc_block_dyld_get_image_name,
-                       (void**)&shadowhook_smbc_orig_dyld_get_image_name);
-        smbc24_diag(@"INSTALL: _dyld_get_image_name");
-    }
-    sym = dlsym(RTLD_DEFAULT, "_dyld_get_image_header");
-    if (sym) {
-        MSHookFunction(sym, (void*)shadowhook_smbc_block_dyld_get_image_header,
-                       (void**)&shadowhook_smbc_orig_dyld_get_image_header);
-        smbc24_diag(@"INSTALL: _dyld_get_image_header");
-    }
-    sym = dlsym(RTLD_DEFAULT, "_dyld_get_image_vmaddr_slide");
-    if (sym) {
-        MSHookFunction(sym, (void*)shadowhook_smbc_block_dyld_get_image_vmaddr_slide,
-                       (void**)&shadowhook_smbc_orig_dyld_get_image_vmaddr_slide);
-        smbc24_diag(@"INSTALL: _dyld_get_image_vmaddr_slide");
-    }
-    sym = dlsym(RTLD_DEFAULT, "_dyld_register_func_for_add_image");
-    if (sym) {
-        MSHookFunction(sym,
-            (void*)shadowhook_smbc_block_dyld_register_func_for_add_image,
-            (void**)&shadowhook_smbc_orig_dyld_register_func_for_add_image);
-        smbc24_diag(@"INSTALL: _dyld_register_func_for_add_image");
-    }
+    // smbc61: dyld_image_* hooks disabled. Trace from smbc60 confirmed
+    // _dyld_image_count was never called by UI Bank during startup —
+    // and merely installing these hooks regressed white-screen back
+    // to 1s crash via a secondary BAD_ACCESS at pc=0x203d8ae44 whose
+    // multi-frame pop succeeded in smbc59 but failed once the dyld
+    // hook trampolines were present (likely a stack/PAC layout shift
+    // in the unwinder). Code retained above so we can re-enable for a
+    // controlled experiment, but install is gated off.
+    (void)shadowhook_smbc_block_dyld_image_count;
+    (void)shadowhook_smbc_block_dyld_get_image_name;
+    (void)shadowhook_smbc_block_dyld_get_image_header;
+    (void)shadowhook_smbc_block_dyld_get_image_vmaddr_slide;
+    (void)shadowhook_smbc_block_dyld_register_func_for_add_image;
 }
 
 // smbc47: hook UIBank_PRO main exe's two Swift JB-detection functions
