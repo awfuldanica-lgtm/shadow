@@ -2174,7 +2174,19 @@ static BOOL shadowhook_uibank_install_once(void) {
         }
     }
 
-    if (!shadowhook_uibank_orig_fircls_begin) {
+    // smbc64: FIRCLSSettingsManager NOP DISABLED. The smbc63 trace caught
+    // the format string of the last (6th) raise: "Could not configure
+    // Firebase Installations due to invalid FirebaseApp options.
+    // FirebaseOptions.APIKey doesn't match the expected format". That's
+    // genuine Firebase, complaining because OUR @{} return left it without
+    // a usable settings dict. The 5 obfuscated raises before it are
+    // downstream Optional unwraps that depend on Firebase being initialised.
+    // Letting Firebase run unmolested should resolve all 6 raises.
+    // The original smbc25 motivation (NSInternalInconsistencyException
+    // from this method) was almost certainly a downstream cascade from
+    // some OTHER bypass we had at the time, not a JB-detection trap on
+    // the method itself.
+    if (0 && !shadowhook_uibank_orig_fircls_begin) {
         Class cls = NSClassFromString(@"FIRCLSSettingsManager");
         if (cls) {
             Method m = class_getInstanceMethod(
