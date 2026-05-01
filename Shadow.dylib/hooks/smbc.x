@@ -2544,8 +2544,11 @@ static BOOL shadowhook_uibank_install_once(void) {
         }
     }
 
-    // smbc77: binary patch cbz at 0x7b7b70 to skip raise 6 always
-    shadowhook_uibank_install_uibank_patch();
+    // smbc83: disable smbc77 cbz patch — with smbc82's Core.m fix in
+    // place, raise 6 should no longer fire (Firebase init succeeds
+    // natively). Re-enable here if smbc83 regresses.
+    // shadowhook_uibank_install_uibank_patch();
+    (void)shadowhook_uibank_install_uibank_patch;
 
     // smbc76: walk all loaded classes, hook every -validateAPIKey:
     // instance method to NOP. smbc75 hooked=0 because the implementing
@@ -2636,24 +2639,17 @@ static BOOL shadowhook_uibank_install_once(void) {
         }
     }
 
-    // smbc69: hook -[FIRApp configureCore] to always return YES.
-    // FIRApp class instance method.
-    static int fircls_configureCore_done = 0;
-    if (!fircls_configureCore_done) {
-        Class fircls = NSClassFromString(@"FIRApp");
-        if (fircls) {
-            SEL sel = NSSelectorFromString(@"configureCore");
-            Method m = class_getInstanceMethod(fircls, sel);
-            if (m) {
-                method_setImplementation(m, (IMP)shadowhook_uibank_configureCore_replacement);
-                smbc24_diag(@"INSTALL: -[FIRApp configureCore] -> YES");
-                fircls_configureCore_done = 1;
-            }
-        }
-    }
+    // smbc83: disable smbc69 configureCore force-YES — let Firebase
+    // run its real configureCore. With smbc82's Core.m fix Firebase
+    // should succeed naturally. Keeping the replacement function
+    // referenced (compile-time silence).
+    (void)shadowhook_uibank_configureCore_replacement;
 
-    // smbc66: hook +[FIROptions defaultOptions] to log return value
-    if (!shadowhook_uibank_orig_fir_defopts) {
+    // smbc83: disable smbc66/68 defaultOptions REBUILD hook — let
+    // Firebase native dispatch_once create FIROptions via plist
+    // (now reachable with smbc82 Core.m fix).
+    (void)shadowhook_uibank_fir_defopts_replacement;
+    if (0 && !shadowhook_uibank_orig_fir_defopts) {
         Class cls = NSClassFromString(@"FIROptions");
         if (cls) {
             Method m = class_getClassMethod(
