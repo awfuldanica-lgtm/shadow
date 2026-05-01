@@ -157,6 +157,20 @@
 - (NSString *)pathForResource:(NSString *)name ofType:(NSString *)ext {
     NSString* result = %orig;
 
+    // smbc67: under roothide, an app's bundlePath may resolve through
+    // symlinks into /.jbroot-XXX/... territory. isPathRestricted then
+    // flags the path as restricted because of the /.jbroot- substring,
+    // and we return nil — breaking any code that loads in-bundle
+    // resources by name (notably +[FIROptions defaultOptions] reading
+    // GoogleService-Info.plist, which then cascades into Firebase init
+    // raising 5 obfuscated NSException force-unwraps in UI Bank).
+    // App-bundle-internal resources can never be a JB indicator, so
+    // skip the restriction check when the result is inside our own
+    // mainBundle.
+    if (result && [result hasPrefix:[[NSBundle mainBundle] bundlePath]]) {
+        return result;
+    }
+
     if(!isCallerTweak() && [_shadow isPathRestricted:result]) {
         return nil;
     }
@@ -167,6 +181,10 @@
 - (NSString *)pathForResource:(NSString *)name ofType:(NSString *)ext inDirectory:(NSString *)subpath {
     NSString* result = %orig;
 
+    if (result && [result hasPrefix:[[NSBundle mainBundle] bundlePath]]) {
+        return result;
+    }
+
     if(!isCallerTweak() && [_shadow isPathRestricted:result]) {
         return nil;
     }
@@ -176,6 +194,10 @@
 
 - (NSString *)pathForResource:(NSString *)name ofType:(NSString *)ext inDirectory:(NSString *)subpath forLocalization:(NSString *)localizationName {
     NSString* result = %orig;
+
+    if (result && [result hasPrefix:[[NSBundle mainBundle] bundlePath]]) {
+        return result;
+    }
 
     if(!isCallerTweak() && [_shadow isPathRestricted:result]) {
         return nil;
