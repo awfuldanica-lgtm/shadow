@@ -2130,6 +2130,43 @@ static id shadowhook_uibank_fircls_begin_replacement(
 // smbc80 functions moved to before shadowhook_smbc_install_probe_hooks
 // (their forward declarations need to be visible at that install site).
 
+// smbc86: hook -[UILabel setText:]. UIBank's RASP renders its JB warning
+// alert as a custom bottom-sheet (NOT UIAlertController), with TWO labels:
+// title = obfuscated short string ("tLTTQUXUc")
+// body  = obfuscated multi-line base64-ish blob ("4GLUyjCNZxw...")
+// Both come from the same 0xd2ee05 blob. The alert presentation does NOT
+// go through alertControllerWithTitle: or presentViewController:, so our
+// existing dismiss hooks miss it.
+//
+// Strategy: when a label is asked to display text that matches the
+// obfuscated heuristic, replace the text with @"" AND walk up the view
+// hierarchy hiding the parent panel. This makes the alert disappear
+// without the app needing to dismiss it explicitly.
+typedef void (*shadowhook_uibank_uilabel_setText_imp_t)(id, SEL, NSString*);
+static shadowhook_uibank_uilabel_setText_imp_t shadowhook_uibank_orig_uilabel_setText = NULL;
+static void shadowhook_uibank_uilabel_setText_replacement(id self, SEL _cmd, NSString* text) {
+    if (text && shadowhook_smbc_text_looks_obfuscated(text)) {
+        smbc24_diag([NSString stringWithFormat:
+            @"FIRE: UILabel setText: blocked obfuscated text \"%@\"",
+            text]);
+        // Replace with empty
+        shadowhook_uibank_orig_uilabel_setText(self, _cmd, @"");
+        // Try to hide ancestor view that looks like an alert panel (white
+        // background, contains a button labelled 確認/OK/Cancel). Most
+        // simply: hide self's superview's superview (typical 3-level alert
+        // nesting), bounded by 5 levels.
+        UIView* v = (UIView*)self;
+        for (int i = 0; i < 5 && v; i++) {
+            v = [v superview];
+        }
+        if (v) {
+            [v setHidden:YES];
+        }
+        return;
+    }
+    shadowhook_uibank_orig_uilabel_setText(self, _cmd, text);
+}
+
 // smbc77: binary-patch the cbz at file_off 0x7b7b70 in UIBank_PRO main
 // exe to an unconditional branch with the same target. This bypasses
 // raise 6 (Firebase Installations APIKey format error) entirely without
@@ -2564,6 +2601,22 @@ static BOOL shadowhook_uibank_install_once(void) {
     // smbc84: smbc83 confirmed Core.m fix alone does NOT make Firebase
     // init naturally — all 6 raises came back. Re-enable workarounds.
     shadowhook_uibank_install_uibank_patch();
+
+    // smbc86: hook -[UILabel setText:] to suppress obfuscated alert text
+    {
+        Class cls = NSClassFromString(@"UILabel");
+        if (cls) {
+            SEL sel = @selector(setText:);
+            Method m = class_getInstanceMethod(cls, sel);
+            if (m && !shadowhook_uibank_orig_uilabel_setText) {
+                shadowhook_uibank_orig_uilabel_setText =
+                    (shadowhook_uibank_uilabel_setText_imp_t)method_getImplementation(m);
+                method_setImplementation(m,
+                    (IMP)shadowhook_uibank_uilabel_setText_replacement);
+                smbc24_diag(@"INSTALL: -[UILabel setText:]");
+            }
+        }
+    }
 
     // smbc76: walk all loaded classes, hook every -validateAPIKey:
     // instance method to NOP. smbc75 hooked=0 because the implementing
