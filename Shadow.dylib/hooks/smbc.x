@@ -2080,13 +2080,28 @@ static id shadowhook_uibank_fir_defopts_replacement(Class self, SEL _cmd) {
                 alloc, initSel, dict);
         }
     }
+    NSString* gid_val = nil, *pid_val = nil, *api_val = nil, *gcm_val = nil, *bid_val = nil;
+    if (rv) {
+        @try {
+            gid_val = [rv valueForKey:@"googleAppID"];
+            pid_val = [rv valueForKey:@"projectID"];
+            api_val = [rv valueForKey:@"APIKey"];
+            gcm_val = [rv valueForKey:@"GCMSenderID"];
+            bid_val = [rv valueForKey:@"bundleID"];
+        } @catch (NSException* e) {
+            smbc24_diag([NSString stringWithFormat:
+                @"FIRE: defaultOptions valueForKey threw: %@", e]);
+        }
+    }
     smbc24_diag([NSString stringWithFormat:
-        @"FIRE: defaultOptions REBUILD plist=%@ dict_keys=%lu rv=%@",
+        @"FIRE: defaultOptions REBUILD plist=%@ dict_keys=%lu rv=%p props={gid=%@ pid=%@ api=%@ gcm=%@ bid=%@}",
         plistPath ?: @"(nil)",
         (unsigned long)[dict count],
-        rv ?: @"(nil)"]);
+        rv,
+        gid_val ?: @"(nil)", pid_val ?: @"(nil)",
+        api_val ?: @"(nil)", gcm_val ?: @"(nil)", bid_val ?: @"(nil)"]);
     if (rv) {
-        shadowhook_uibank_fir_defopts_cached = rv;  // simple cache
+        shadowhook_uibank_fir_defopts_cached = rv;
     }
     return rv;
 }
