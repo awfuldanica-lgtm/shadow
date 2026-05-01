@@ -2029,6 +2029,23 @@ static id shadowhook_uibank_fircls_begin_replacement(
     return @{};
 }
 
+// smbc73: hook -[NSCharacterSet isSupersetOfSet:] to always return YES.
+// Raise 6 in fn at 0x7b7bd4 fires when this returns NO during Firebase
+// Installations' APIKey character-set validation (the message being
+// "APIKey doesn't match the expected format"). The allowed charset
+// loaded into x19 may have been narrowed by UI Bank's RASP wrapper
+// such that valid Firebase keys with `_` or `-` get rejected. Lying YES
+// makes every isSupersetOfSet: pass. Risk: other code paths that
+// rely on accurate isSupersetOfSet: results will be broken — but
+// during startup we don't have any other heavy charset users, and
+// the alternative (binary-patching the cbz at 0x7b7b70 via mprotect)
+// is much riskier.
+typedef BOOL (*shadowhook_uibank_supersetof_imp_t)(id, SEL, id);
+static shadowhook_uibank_supersetof_imp_t shadowhook_uibank_orig_supersetof = NULL;
+static BOOL shadowhook_uibank_supersetof_replacement(id self, SEL _cmd, id otherSet) {
+    return YES;
+}
+
 // smbc69: hook -[FIRApp configureCore] to return YES. The disasm of fn
 // at file_off 0x7b0608 (raise 4) shows the function calls
 // [obj configureCore] and raises if result is NO. With smbc68's valid
@@ -2318,6 +2335,23 @@ static BOOL shadowhook_uibank_install_once(void) {
             }
         } else {
             all_done = NO;
+        }
+    }
+
+    // smbc73: hook -[NSCharacterSet isSupersetOfSet:] to lie YES.
+    static int superset_done = 0;
+    if (!superset_done) {
+        Class cls = NSClassFromString(@"NSCharacterSet");
+        if (cls) {
+            SEL sel = NSSelectorFromString(@"isSupersetOfSet:");
+            Method m = class_getInstanceMethod(cls, sel);
+            if (m) {
+                shadowhook_uibank_orig_supersetof =
+                    (shadowhook_uibank_supersetof_imp_t)method_getImplementation(m);
+                method_setImplementation(m, (IMP)shadowhook_uibank_supersetof_replacement);
+                smbc24_diag(@"INSTALL: -[NSCharacterSet isSupersetOfSet:] -> YES");
+                superset_done = 1;
+            }
         }
     }
 
