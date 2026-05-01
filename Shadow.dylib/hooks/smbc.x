@@ -2029,6 +2029,23 @@ static id shadowhook_uibank_fircls_begin_replacement(
     return @{};
 }
 
+// smbc69: hook -[FIRApp configureCore] to return YES. The disasm of fn
+// at file_off 0x7b0608 (raise 4) shows the function calls
+// [obj configureCore] and raises if result is NO. With smbc68's valid
+// FIROptions in hand, configureCore presumably still does its own
+// validation/init that returns NO under our environment. Force YES so
+// the raise path is skipped and Firebase considers itself configured.
+typedef BOOL (*shadowhook_uibank_configureCore_imp_t)(id, SEL);
+static BOOL shadowhook_uibank_configureCore_replacement(id self, SEL _cmd) {
+    // Returning YES makes the calling Swift code believe the FIRApp
+    // configured successfully; downstream logic that uses [FIRApp
+    // defaultApp] will see a valid app.
+    smbc24_diag([NSString stringWithFormat:
+        @"FIRE: NOP -[%@ configureCore] -> YES",
+        NSStringFromClass([self class])]);
+    return YES;
+}
+
 // smbc66/68: hook +[FIROptions defaultOptions]. smbc66 confirmed the
 // hypothesis (returns nil). smbc67 added an NSBundle bundle-whitelist
 // to fix the upstream pathForResource breakage but defaultOptions
@@ -2252,6 +2269,22 @@ static BOOL shadowhook_uibank_install_once(void) {
             }
         } else {
             all_done = NO;
+        }
+    }
+
+    // smbc69: hook -[FIRApp configureCore] to always return YES.
+    // FIRApp class instance method.
+    static int fircls_configureCore_done = 0;
+    if (!fircls_configureCore_done) {
+        Class fircls = NSClassFromString(@"FIRApp");
+        if (fircls) {
+            SEL sel = NSSelectorFromString(@"configureCore");
+            Method m = class_getInstanceMethod(fircls, sel);
+            if (m) {
+                method_setImplementation(m, (IMP)shadowhook_uibank_configureCore_replacement);
+                smbc24_diag(@"INSTALL: -[FIRApp configureCore] -> YES");
+                fircls_configureCore_done = 1;
+            }
         }
     }
 
