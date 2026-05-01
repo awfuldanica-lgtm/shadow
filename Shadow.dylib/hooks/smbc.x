@@ -2130,6 +2130,24 @@ static id shadowhook_uibank_fircls_begin_replacement(
 // smbc80 functions moved to before shadowhook_smbc_install_probe_hooks
 // (their forward declarations need to be visible at that install site).
 
+// smbc87: hook -[UIWindow addSubview:]. The smbc86 UILabel hook never
+// fired - so the alert text is set via SwiftUI / CATextLayer / private
+// API, not UILabel. Log every addSubview: on UIWindow so we can see
+// what custom view class shows the alert. The alert must end up in the
+// window hierarchy somewhere; with the class name we can target the
+// appropriate hook.
+typedef void (*shadowhook_uibank_uiwindow_addSubview_imp_t)(id, SEL, UIView*);
+static shadowhook_uibank_uiwindow_addSubview_imp_t shadowhook_uibank_orig_uiwindow_addSubview = NULL;
+static void shadowhook_uibank_uiwindow_addSubview_replacement(id self, SEL _cmd, UIView* view) {
+    if (view) {
+        smbc24_diag([NSString stringWithFormat:
+            @"FIRE: UIWindow addSubview: %@ frame=%@",
+            NSStringFromClass([view class]),
+            NSStringFromCGRect(view.frame)]);
+    }
+    shadowhook_uibank_orig_uiwindow_addSubview(self, _cmd, view);
+}
+
 // smbc86: hook -[UILabel setText:]. UIBank's RASP renders its JB warning
 // alert as a custom bottom-sheet (NOT UIAlertController), with TWO labels:
 // title = obfuscated short string ("tLTTQUXUc")
@@ -2614,6 +2632,22 @@ static BOOL shadowhook_uibank_install_once(void) {
                 method_setImplementation(m,
                     (IMP)shadowhook_uibank_uilabel_setText_replacement);
                 smbc24_diag(@"INSTALL: -[UILabel setText:]");
+            }
+        }
+    }
+
+    // smbc87: hook -[UIWindow addSubview:] to log subview class names
+    {
+        Class cls = NSClassFromString(@"UIWindow");
+        if (cls) {
+            SEL sel = @selector(addSubview:);
+            Method m = class_getInstanceMethod(cls, sel);
+            if (m && !shadowhook_uibank_orig_uiwindow_addSubview) {
+                shadowhook_uibank_orig_uiwindow_addSubview =
+                    (shadowhook_uibank_uiwindow_addSubview_imp_t)method_getImplementation(m);
+                method_setImplementation(m,
+                    (IMP)shadowhook_uibank_uiwindow_addSubview_replacement);
+                smbc24_diag(@"INSTALL: -[UIWindow addSubview:]");
             }
         }
     }
