@@ -2029,6 +2029,27 @@ static id shadowhook_uibank_fircls_begin_replacement(
     return @{};
 }
 
+// smbc66: hook +[FIROptions defaultOptions] to confirm the smbc63 hypothesis
+// that the 5 obfuscated Swift force-unwrap raises are caused by Firebase
+// init failing — specifically, defaultOptions returning nil. We call the
+// original and log the result class. If nil, the hypothesis is confirmed
+// and the next step is to construct a valid FIROptions object manually.
+typedef id (*shadowhook_uibank_fir_defopts_imp_t)(Class, SEL);
+static shadowhook_uibank_fir_defopts_imp_t shadowhook_uibank_orig_fir_defopts = NULL;
+static id shadowhook_uibank_fir_defopts_replacement(Class self, SEL _cmd) {
+    id rv = shadowhook_uibank_orig_fir_defopts(self, _cmd);
+    if (rv) {
+        smbc24_diag([NSString stringWithFormat:
+            @"FIRE: defaultOptions -> %@ class=%@ apikey=%@",
+            rv, NSStringFromClass([rv class]),
+            [rv respondsToSelector:NSSelectorFromString(@"APIKey")]
+                ? [rv valueForKey:@"APIKey"] : @"(no-prop)"]);
+    } else {
+        smbc24_diag(@"FIRE: defaultOptions -> nil — Firebase init will cascade-fail");
+    }
+    return rv;
+}
+
 // smbc28 attempt to also NOP FIRCLSReportManager startWithProfiling and
 // beginSettingsWithToken: was reverted in smbc29. Empirically that made
 // the crash happen earlier (immediate, not after 1s splash). Those methods
@@ -2207,6 +2228,22 @@ static BOOL shadowhook_uibank_install_once(void) {
             }
         } else {
             all_done = NO;
+        }
+    }
+
+    // smbc66: hook +[FIROptions defaultOptions] to log return value
+    if (!shadowhook_uibank_orig_fir_defopts) {
+        Class cls = NSClassFromString(@"FIROptions");
+        if (cls) {
+            Method m = class_getClassMethod(
+                cls, NSSelectorFromString(@"defaultOptions"));
+            if (m) {
+                shadowhook_uibank_orig_fir_defopts =
+                    (shadowhook_uibank_fir_defopts_imp_t)method_getImplementation(m);
+                method_setImplementation(m,
+                    (IMP)shadowhook_uibank_fir_defopts_replacement);
+                smbc24_diag(@"INSTALL: +[FIROptions defaultOptions]");
+            }
         }
     }
 
