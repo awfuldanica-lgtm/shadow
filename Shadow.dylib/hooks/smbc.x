@@ -2338,20 +2338,53 @@ static BOOL shadowhook_uibank_install_once(void) {
         }
     }
 
-    // smbc73: hook -[NSCharacterSet isSupersetOfSet:] to lie YES.
+    // smbc74: smbc73 hooked NSCharacterSet but the concrete subclass
+    // (e.g., NSCFCharacterSet / __NSCFCharacterSet / NSMutableCharacterSet)
+    // overrides isSupersetOfSet: so our parent-class swizzle didn't take
+    // effect at the actual call site. Walk every loaded class, find any
+    // that descends from NSCharacterSet AND defines its own
+    // isSupersetOfSet:, and swizzle each.
     static int superset_done = 0;
     if (!superset_done) {
-        Class cls = NSClassFromString(@"NSCharacterSet");
-        if (cls) {
-            SEL sel = NSSelectorFromString(@"isSupersetOfSet:");
-            Method m = class_getInstanceMethod(cls, sel);
-            if (m) {
-                shadowhook_uibank_orig_supersetof =
-                    (shadowhook_uibank_supersetof_imp_t)method_getImplementation(m);
-                method_setImplementation(m, (IMP)shadowhook_uibank_supersetof_replacement);
-                smbc24_diag(@"INSTALL: -[NSCharacterSet isSupersetOfSet:] -> YES");
-                superset_done = 1;
+        Class baseCls = NSClassFromString(@"NSCharacterSet");
+        SEL sel = NSSelectorFromString(@"isSupersetOfSet:");
+        if (baseCls) {
+            int classCount = objc_getClassList(NULL, 0);
+            Class* classes = (Class*)malloc(sizeof(Class) * classCount);
+            classCount = objc_getClassList(classes, classCount);
+            int hooked = 0;
+            for (int i = 0; i < classCount; i++) {
+                Class c = classes[i];
+                Class parent = c;
+                BOOL isCharSet = NO;
+                while (parent) {
+                    if (parent == baseCls) { isCharSet = YES; break; }
+                    parent = class_getSuperclass(parent);
+                }
+                if (!isCharSet) continue;
+                unsigned int n = 0;
+                Method* methods = class_copyMethodList(c, &n);
+                for (unsigned int j = 0; j < n; j++) {
+                    if (method_getName(methods[j]) == sel) {
+                        method_setImplementation(methods[j],
+                            (IMP)shadowhook_uibank_supersetof_replacement);
+                        hooked++;
+                        break;
+                    }
+                }
+                free(methods);
             }
+            free(classes);
+            // Also patch the abstract base class entry as a backstop.
+            Method m = class_getInstanceMethod(baseCls, sel);
+            if (m) {
+                method_setImplementation(m,
+                    (IMP)shadowhook_uibank_supersetof_replacement);
+                hooked++;
+            }
+            smbc24_diag([NSString stringWithFormat:
+                @"INSTALL: NSCharacterSet+subclasses isSupersetOfSet: -> YES (hooked=%d)", hooked]);
+            superset_done = 1;
         }
     }
 
