@@ -819,9 +819,14 @@ static shadowhook_smbc_nsexc_raise_imp_t shadowhook_smbc_orig_nsexception_raise 
 
 static void shadowhook_smbc_nsexception_raise_replacement(
     Class self, SEL _cmd, NSString* name, NSString* format, ...) {
+    // smbc63: log the format string too — the obfuscated `name` reveals
+    // nothing, but the format may contain a recognizable Swift fatal
+    // template ("Fatal error: ...") or app-specific error wording that
+    // tells us where in the code the raise is firing from.
+    NSString* fmt_safe = format ?: @"(nil format)";
     smbc24_diag([NSString stringWithFormat:
-        @"FIRE: dying via +[NSException raise:format:] name=%@ from %p",
-        name, __builtin_return_address(0)]);
+        @"FIRE: dying via +[NSException raise:format:] name=%@ fmt=%@ from %p",
+        name, fmt_safe, __builtin_return_address(0)]);
     NSLog(@"[Shadow/SMBC] swallowed NSException raise: name=%@ format=%@", name, format);
 }
 
