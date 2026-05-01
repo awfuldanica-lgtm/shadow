@@ -674,9 +674,34 @@ static void* shadowhook_smbc_exception_thread(void* arg) {
             // Both cases: PC+=4 just keeps spinning. Forcing a frame
             // pop returns to the caller cleanly so the rest of the
             // app init can proceed.
-            BOOL should_pop = (pc < 0x10000)
+            // smbc81: surgical fix for strlen(NULL) — set x0=0, PC=LR
+            // and skip the multi-frame pop. _platform_strlen is hit
+            // dozens of times after smbc78 because Foundation/Swift/
+            // Firebase code calls strlen on nil pointers. Popping
+            // unwinds whole worker threads (destructive). Returning 0
+            // from strlen mimics empty-string semantics.
+            BOOL strlen_handled = NO;
+            if (msg.exception == EXC_BAD_ACCESS
+                && (uint64_t)msg.code[1] < 0x10000
+                && pc_ok && pc_info.dli_sname
+                && strstr(pc_info.dli_sname, "platform_strlen")) {
+                uint64_t lr = (uint64_t)arm_thread_state64_get_lr(state);
+                lr = (uint64_t)ptrauth_strip(
+                    (void*)lr, ptrauth_key_function_pointer);
+                arm_thread_state64_set_pc_fptr(state, (void*)lr);
+                state.__x[0] = 0;
+                if (thread_set_state(msg.thread.name, ARM_THREAD_STATE64,
+                        (thread_state_t)&state, ARM_THREAD_STATE64_COUNT)
+                        == KERN_SUCCESS) {
+                    smbc24_diag(
+                        @"smbc81: strlen(NULL) -> x0=0 PC=LR");
+                    strlen_handled = YES;
+                }
+            }
+
+            BOOL should_pop = !strlen_handled && ((pc < 0x10000)
                 || (msg.exception == EXC_BAD_ACCESS
-                    && (uint64_t)msg.code[1] < 0x10000);
+                    && (uint64_t)msg.code[1] < 0x10000));
             if (should_pop && fp >= 0x10000 && (fp & 0x7) == 0) {
                 // smbc46: pop multiple frames in a single exception
                 // until we exit the dyld shared cache (>= 0x180000000)
