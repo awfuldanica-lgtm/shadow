@@ -680,26 +680,43 @@ static void* shadowhook_smbc_exception_thread(void* arg) {
             // Firebase code calls strlen on nil pointers. Popping
             // unwinds whole worker threads (destructive). Returning 0
             // from strlen mimics empty-string semantics.
-            BOOL strlen_handled = NO;
-            if (msg.exception == EXC_BAD_ACCESS
-                && (uint64_t)msg.code[1] < 0x10000
-                && pc_ok && pc_info.dli_sname
-                && strstr(pc_info.dli_sname, "platform_strlen")) {
-                uint64_t lr = (uint64_t)arm_thread_state64_get_lr(state);
-                lr = (uint64_t)ptrauth_strip(
-                    (void*)lr, ptrauth_key_function_pointer);
-                arm_thread_state64_set_pc_fptr(state, (void*)lr);
-                state.__x[0] = 0;
-                if (thread_set_state(msg.thread.name, ARM_THREAD_STATE64,
-                        (thread_state_t)&state, ARM_THREAD_STATE64_COUNT)
-                        == KERN_SUCCESS) {
-                    smbc24_diag(
-                        @"smbc81: strlen(NULL) -> x0=0 PC=LR");
-                    strlen_handled = YES;
+            // smbc85: surgical RET-with-x0 for known leaf functions
+            // crashing on bad pointers. Pattern: set state, return YES
+            // from the lambda below if handled (skip pop).
+            // Covered: _platform_strlen / _platform_memmove (return 0)
+            //          objc_retain / objc_release (return 0)
+            // For objc_retain, badaddr typically 0x20/0x10 (offset reads
+            // into the isa/refcount of a uninitialized or freed obj);
+            // we accept any badaddr < 0x1000 OR matching scribble pattern.
+            BOOL leaf_handled = NO;
+            if (msg.exception == EXC_BAD_ACCESS && pc_ok && pc_info.dli_sname) {
+                uint64_t bad = (uint64_t)msg.code[1];
+                BOOL bad_is_low = bad < 0x1000;
+                BOOL bad_is_scribble =
+                    ((bad & 0xff00000000000000ULL) == 0x1d00000000000000ULL);
+                BOOL is_strlen = strstr(pc_info.dli_sname, "platform_strlen") != NULL;
+                BOOL is_memmove = strstr(pc_info.dli_sname, "platform_memmove") != NULL;
+                BOOL is_retain  = strcmp(pc_info.dli_sname, "objc_retain") == 0
+                                || strcmp(pc_info.dli_sname, "objc_release") == 0;
+                if ((is_strlen || is_memmove || is_retain)
+                    && (bad_is_low || bad_is_scribble)) {
+                    uint64_t lr = (uint64_t)arm_thread_state64_get_lr(state);
+                    lr = (uint64_t)ptrauth_strip(
+                        (void*)lr, ptrauth_key_function_pointer);
+                    arm_thread_state64_set_pc_fptr(state, (void*)lr);
+                    state.__x[0] = 0;
+                    if (thread_set_state(msg.thread.name, ARM_THREAD_STATE64,
+                            (thread_state_t)&state, ARM_THREAD_STATE64_COUNT)
+                            == KERN_SUCCESS) {
+                        smbc24_diag([NSString stringWithFormat:
+                            @"smbc85: %s(bad=0x%llx) -> x0=0 PC=LR",
+                            pc_info.dli_sname, (long long)bad]);
+                        leaf_handled = YES;
+                    }
                 }
             }
 
-            BOOL should_pop = !strlen_handled && ((pc < 0x10000)
+            BOOL should_pop = !leaf_handled && ((pc < 0x10000)
                 || (msg.exception == EXC_BAD_ACCESS
                     && (uint64_t)msg.code[1] < 0x10000));
             if (should_pop && fp >= 0x10000 && (fp & 0x7) == 0) {
