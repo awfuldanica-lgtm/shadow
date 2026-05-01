@@ -1182,18 +1182,16 @@ static char* (*shadowhook_smbc_orig_getenv)(const char*) = NULL;
 static char* shadowhook_smbc_block_getenv(const char* name) {
     SMBC_TRACE(shadowhook_smbc_trace_n_getenv,
         @"trace: getenv(%s)", name ?: "(null)");
-    if (name && (strstr(name, "DYLD_INSERT_LIBRARIES")
-                 || strstr(name, "_MSSafeMode")
-                 || strstr(name, "_SubstrateUseSystemLogs")
-                 // smbc58: UI Bank queries getenv("JBPATHLOG") 8 times
-                 // at startup. JBPATHLOG is set by some JB framework
-                 // (MobileSubstrate-like log path) and its presence is
-                 // a strong JB indicator. Return NULL.
-                 || strstr(name, "JBPATHLOG")
-                 || strstr(name, "JBPath")
-                 || strstr(name, "JBROOT")
-                 || strstr(name, "ROOTHIDE")
-                 || strstr(name, "TWEAK"))) {
+    // smbc59: use exact name match instead of substring match. smbc58s
+    // substring "ROOTHIDE" and "TWEAK" matched env vars roothide and
+    // shadow internals legitimately read, causing those internals to
+    // fail and the app to crash within ~1s (regression from smbc57s
+    // white-screen behaviour). Only lie for env vars that are
+    // unambiguously JB-detection indicators.
+    if (name && (strcmp(name, "DYLD_INSERT_LIBRARIES") == 0
+                 || strcmp(name, "_MSSafeMode") == 0
+                 || strcmp(name, "_SubstrateUseSystemLogs") == 0
+                 || strcmp(name, "JBPATHLOG") == 0)) {
         smbc24_diag([NSString stringWithFormat:
             @"FIRE: getenv(%s) -> NULL (lied)", name]);
         return NULL;
