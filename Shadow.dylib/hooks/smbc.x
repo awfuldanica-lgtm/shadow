@@ -2029,6 +2029,21 @@ static id shadowhook_uibank_fircls_begin_replacement(
     return @{};
 }
 
+// smbc75: hook -validateAPIKey: globally to NOP. The method at file_off
+// 0x7b7a14 (Firebase's APIKey validator) checks length==39, first char
+// =='A', and charset, raising NSException via name=fa/Yjnli... if any
+// fails. We confirmed our cached FIROptions has APIKey = AIzaSy... but
+// raise 6 still fires - so either the receiver gets a different value
+// or one of the checks fires on something we are not aware of. Skip the
+// whole method: caller (0x7b79e4) ignores the return value.
+typedef id (*shadowhook_uibank_validateAPIKey_imp_t)(id, SEL, id);
+static id shadowhook_uibank_validateAPIKey_replacement(id self, SEL _cmd, id apiKey) {
+    smbc24_diag([NSString stringWithFormat:
+        @"FIRE: NOP -[%@ validateAPIKey:%@]",
+        NSStringFromClass([self class]), apiKey ?: @"(nil)"]);
+    return nil;
+}
+
 // smbc73: hook -[NSCharacterSet isSupersetOfSet:] to always return YES.
 // Raise 6 in fn at 0x7b7bd4 fires when this returns NO during Firebase
 // Installations' APIKey character-set validation (the message being
@@ -2337,6 +2352,38 @@ static BOOL shadowhook_uibank_install_once(void) {
         } else {
             all_done = NO;
         }
+    }
+
+    // smbc75: walk all classes, hook every -validateAPIKey: instance
+    // method to a no-op. The method at 0x7b7a14 raises raise 6 when its
+    // internal checks fail. NOPing the method skips all checks. The
+    // caller at 0x7b79e4 ignores the return value, so returning nil is
+    // safe.
+    static int validateAPIKey_done = 0;
+    if (!validateAPIKey_done) {
+        SEL sel = NSSelectorFromString(@"validateAPIKey:");
+        int classCount = objc_getClassList(NULL, 0);
+        Class* classes = (Class*)malloc(sizeof(Class) * classCount);
+        classCount = objc_getClassList(classes, classCount);
+        int hooked = 0;
+        for (int i = 0; i < classCount; i++) {
+            Class c = classes[i];
+            unsigned int n = 0;
+            Method* methods = class_copyMethodList(c, &n);
+            for (unsigned int j = 0; j < n; j++) {
+                if (method_getName(methods[j]) == sel) {
+                    method_setImplementation(methods[j],
+                        (IMP)shadowhook_uibank_validateAPIKey_replacement);
+                    hooked++;
+                    break;
+                }
+            }
+            free(methods);
+        }
+        free(classes);
+        smbc24_diag([NSString stringWithFormat:
+            @"INSTALL: -validateAPIKey: NOP (hooked=%d)", hooked]);
+        validateAPIKey_done = 1;
     }
 
     // smbc74: smbc73 hooked NSCharacterSet but the concrete subclass
