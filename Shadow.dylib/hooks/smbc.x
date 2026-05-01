@@ -2041,6 +2041,7 @@ static id shadowhook_uibank_fircls_begin_replacement(
 // the alternative (binary-patching the cbz at 0x7b7b70 via mprotect)
 // is much riskier.
 typedef BOOL (*shadowhook_uibank_supersetof_imp_t)(id, SEL, id);
+__attribute__((unused))
 static shadowhook_uibank_supersetof_imp_t shadowhook_uibank_orig_supersetof = NULL;
 static BOOL shadowhook_uibank_supersetof_replacement(id self, SEL _cmd, id otherSet) {
     return YES;
