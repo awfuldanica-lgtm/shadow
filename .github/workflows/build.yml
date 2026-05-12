@@ -147,6 +147,9 @@ jobs:
           make package
           # Bundle shadow deb together with deps for one-shot install.
           cp packages/*.deb $GITHUB_WORKSPACE/output_packages/
+          # aidblock: standalone tweak that suppresses Apple ID verify
+          # popups in SpringBoard. Built as separate deb.
+          (cd aidblock && make clean && make package && cp packages/*.deb $GITHUB_WORKSPACE/output_packages/)
           ls -la $GITHUB_WORKSPACE/output_packages/
 
       - name: Upload deb artifact
