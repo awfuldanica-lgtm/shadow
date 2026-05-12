@@ -2,7 +2,7 @@ Package: com.harry.aidblock
 Name: AID Block
 Pre-Depends: dpkg
 Depends: firmware (>= 14.0), mobilesubstrate
-Version: 1.2.0
+Version: 1.3.0
 Architecture: iphoneos-arm
 Description: Suppress recurring "Verify Apple ID" / 验证 Apple ID popups in SpringBoard
 Maintainer: harry

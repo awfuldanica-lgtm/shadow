@@ -1,21 +1,19 @@
-// aidblock 1.2.0: ultra-conservative version after 1.0.0 + 1.1.0 both
-// caused SpringBoard safe-mode.
+// aidblock 1.3.0: minimum-viable hook to eliminate Apple ID popup.
 //
-// Root cause of safe-mode: returning nil from
-//   +[UIAlertController alertControllerWithTitle:message:preferredStyle:]
-// or from -[UIViewController presentViewController:...] breaks callers
-// that immediately dereference the return value. SpringBoard's BannerAuthAlert
-// code does this and crashes.
+// History of failures:
+//  1.0.0: %hook UIViewController viewWillAppear: with recursive dismiss
+//         -> SpringBoard safe-mode (broad hook on every system VC)
+//  1.1.0: same broad VC hook + returning nil from factory
+//         -> SpringBoard safe-mode (callers deref nil)
+//  1.2.0: factory returns valid object with empty title/message
+//         -> alert appears blank but still appears (user rejected:
+//            wants alert GONE, not empty)
 //
-// 1.2.0 strategy: NEVER return nil. Instead:
-//   - Let alertController factory create a normal alert object.
-//   - On the SAME instance, immediately set title=@"" message=@"" so the
-//     resulting alert is empty.
-//   - On presentation, if it's an Apple-ID-prompt-looking alert, present
-//     to a hidden window or immediately dismiss after present.
-//
-// Also remove all %hook UIViewController to avoid pervasive perturbation
-// of SpringBoard's view controllers.
+// 1.3.0 strategy: hook exactly ONE method on exactly ONE class (UIAlertController
+// -viewDidAppear:). When the alert is fully on-screen we check title/message; if
+// it smells like Apple ID prompt, dispatch_async a dismiss on next runloop tick.
+// User sees the alert for 1-2 frames at most then it disappears. No nil
+// returns, no broad VC hook, no factory perturbation.
 
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
@@ -31,7 +29,7 @@ static BOOL aidblock_text_looks_apple_id(NSString* s) {
             @"Apple Account", @"Apple ID 密码", @"Apple ID 密碼",
             @"@gmail.com", @"@icloud.com", @"@me.com",
             @"vtghuk13", @"iCloud", @"sign in to Apple",
-            @"输入密码", @"輸入密碼"
+            @"输入密码", @"輸入密碼", @"Verify"
         ];
     });
     for (NSString* n in needles) {
@@ -42,77 +40,58 @@ static BOOL aidblock_text_looks_apple_id(NSString* s) {
     return NO;
 }
 
-static BOOL aidblock_alert_should_block(NSString* title, NSString* message) {
-    return aidblock_text_looks_apple_id(title)
-        || aidblock_text_looks_apple_id(message);
-}
+// Save original IMP.
+typedef void (*aidb_vda_imp_t)(id, SEL, BOOL);
+static aidb_vda_imp_t aidb_orig_vda = NULL;
 
-// Swizzle helper: replace [cls -sel] IMP with newImp, store old in *outOld.
-static void aidblock_swizzle(Class cls, SEL sel, IMP newImp, IMP* outOld) {
-    Method m = class_getInstanceMethod(cls, sel);
-    if (!m) return;
-    if (outOld) *outOld = method_getImplementation(m);
-    method_setImplementation(m, newImp);
-}
-
-// (1) Hook +[UIAlertController alertControllerWithTitle:message:preferredStyle:]
-// SAFELY: forward to original, but if title/message smell like Apple ID, clear
-// them to @"" so user sees blank alert. Never return nil.
-typedef id (*aidb_factory_imp_t)(Class, SEL, NSString*, NSString*, NSInteger);
-static aidb_factory_imp_t aidb_orig_factory = NULL;
-static id aidb_replaced_factory(Class self, SEL _cmd, NSString* title,
-                                NSString* message, NSInteger style) {
-    BOOL block = aidblock_alert_should_block(title, message);
-    if (block) {
-        NSLog(@"[aidblock] neutered alertController title=%@ message=%@", title, message);
-        // Pass empty strings instead of nil to keep object well-formed.
-        return aidb_orig_factory(self, _cmd, @"", @"", style);
+static void aidb_uialert_vda_replacement(id self, SEL _cmd, BOOL animated) {
+    // Always call original first so the alert is in a consistent state.
+    if (aidb_orig_vda) aidb_orig_vda(self, _cmd, animated);
+    // Now check this specific instance.
+    UIAlertController* alert = (UIAlertController*)self;
+    NSString* title = nil;
+    NSString* message = nil;
+    @try {
+        title = alert.title;
+        message = alert.message;
+    } @catch (NSException* e) {
+        return;
     }
-    return aidb_orig_factory(self, _cmd, title, message, style);
-}
-
-// (2) Best-effort: hook private SBSAlertItem-style classes via runtime
-// swizzle on selectors that present. NULL-guarded throughout.
-typedef void (*aidb_void_imp_t)(id, SEL, ...);
-static aidb_void_imp_t aidb_orig_sbsalert_willpresent = NULL;
-static void aidb_sbsalert_willpresent_replacement(id self, SEL _cmd, id alert) {
-    if (alert && [alert isKindOfClass:[UIAlertController class]]) {
-        UIAlertController* a = (UIAlertController*)alert;
-        if (aidblock_alert_should_block(a.title, a.message)) {
-            NSLog(@"[aidblock] swallowed SBSAlertItem willPresent");
-            return;
-        }
-    }
-    if (aidb_orig_sbsalert_willpresent) {
-        aidb_orig_sbsalert_willpresent(self, _cmd, alert);
+    if (aidblock_text_looks_apple_id(title)
+        || aidblock_text_looks_apple_id(message)) {
+        NSLog(@"[aidblock] auto-dismiss alert title=%@ message=%@",
+              title, message);
+        // Dispatch on next runloop so we don't interrupt UIKit's
+        // present transaction.
+        __weak UIAlertController* weakAlert = alert;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIAlertController* a = weakAlert;
+            if (!a) return;
+            @try {
+                [a dismissViewControllerAnimated:NO completion:nil];
+            } @catch (NSException* e) {
+                NSLog(@"[aidblock] dismiss threw: %@", e);
+            }
+        });
     }
 }
 
 %ctor {
     @autoreleasepool {
-        // Hook UIAlertController factory class method.
-        // For class methods we need the metaclass's instance method.
-        Class uic = NSClassFromString(@"UIAlertController");
-        if (uic) {
-            Class metac = object_getClass(uic);
-            SEL sel = NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:");
-            Method m = class_getInstanceMethod(metac, sel);
+        Class cls = NSClassFromString(@"UIAlertController");
+        if (cls) {
+            SEL sel = @selector(viewDidAppear:);
+            Method m = class_getInstanceMethod(cls, sel);
             if (m) {
-                aidb_orig_factory = (aidb_factory_imp_t)method_getImplementation(m);
-                method_setImplementation(m, (IMP)aidb_replaced_factory);
-                NSLog(@"[aidblock] hooked +alertControllerWithTitle:message:preferredStyle:");
+                aidb_orig_vda = (aidb_vda_imp_t)method_getImplementation(m);
+                method_setImplementation(m, (IMP)aidb_uialert_vda_replacement);
+                NSLog(@"[aidblock] 1.3.0 hooked -[UIAlertController viewDidAppear:]");
+            } else {
+                NSLog(@"[aidblock] 1.3.0 FAIL: no viewDidAppear: method on UIAlertController");
             }
+        } else {
+            NSLog(@"[aidblock] 1.3.0 FAIL: UIAlertController class not found");
         }
-
-        // Hook SBSAlertItem private class if present.
-        Class sbsa = NSClassFromString(@"SBSAlertItem");
-        if (sbsa) {
-            SEL sel = NSSelectorFromString(@"willPresentAlertController:");
-            aidblock_swizzle(sbsa, sel, (IMP)aidb_sbsalert_willpresent_replacement,
-                             (IMP*)&aidb_orig_sbsalert_willpresent);
-            NSLog(@"[aidblock] hooked SBSAlertItem willPresentAlertController:");
-        }
-
-        NSLog(@"[aidblock] 1.2.0 loaded into pid=%d", getpid());
+        NSLog(@"[aidblock] 1.3.0 loaded into pid=%d", getpid());
     }
 }
