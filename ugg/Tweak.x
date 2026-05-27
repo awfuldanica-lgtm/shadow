@@ -1,4 +1,4 @@
-// Ugg 1.3.0 — %group/%init ensures hooks only apply to target apps
+// Ugg 1.5.0 — tweak only, no App bundle, SpringBoard hard-excluded
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -216,12 +216,18 @@ static BOOL ugg_text_is_jb(NSString *s) {
 // ---------------------------------------------------------------------------
 
 %ctor {
+    // Hard-exclude SpringBoard — never touch it regardless of config
+    NSString *bundle = NSBundle.mainBundle.bundleIdentifier;
+    if (!bundle) return;
+    if ([bundle isEqualToString:@"com.apple.springboard"] ||
+        [bundle isEqualToString:@"com.apple.SpringBoard"]) return;
+
     if (!ugg_load_config()) return; // not a target app — install NOTHING
 
     // Install ObjC hooks only for target apps
     %init(UggHooks);
 
-    NSLog(@"[Ugg] 1.3.0 active in %@", NSBundle.mainBundle.bundleIdentifier);
+    NSLog(@"[Ugg] 1.5.0 active in %@", bundle);
 
     if (cfg_antiJailbreak) {
         MSHookFunction((void *)access,  (void *)ugg_access,  (void **)&orig_access);
