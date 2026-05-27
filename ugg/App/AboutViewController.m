@@ -14,7 +14,7 @@
     nameLbl.translatesAutoresizingMaskIntoConstraints = NO;
 
     UILabel *verLbl = [[UILabel alloc] init];
-    verLbl.text = @"Ugg 1.2.0";
+    verLbl.text = @"Ugg 1.3.0";
     verLbl.font = [UIFont systemFontOfSize:15];
     verLbl.textColor = [UIColor secondaryLabelColor];
     verLbl.textAlignment = NSTextAlignmentCenter;

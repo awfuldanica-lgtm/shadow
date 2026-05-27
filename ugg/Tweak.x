@@ -1,4 +1,4 @@
-// Ugg 1.2.0 — reads config from UggConfig plist, only hooks target apps
+// Ugg 1.3.0 — %group/%init ensures hooks only apply to target apps
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -15,7 +15,7 @@
 #define UGG_PLIST "/var/mobile/Library/Preferences/com.harry.ugg.plist"
 
 // ---------------------------------------------------------------------------
-// Config (read-only at load time)
+// Config
 // ---------------------------------------------------------------------------
 
 static BOOL cfg_antiJailbreak    = NO;
@@ -35,7 +35,6 @@ static BOOL ugg_load_config(void) {
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:@UGG_PLIST];
     if (!d) return NO;
 
-    // Check target apps
     NSString *myBundle = NSBundle.mainBundle.bundleIdentifier;
     NSArray *targets = d[@"targetApps"];
     if (!myBundle || !targets || ![targets containsObject:myBundle]) return NO;
@@ -57,7 +56,7 @@ static BOOL ugg_load_config(void) {
 }
 
 // ---------------------------------------------------------------------------
-// JB path / env helpers (only used when antiJailbreak ON)
+// JB path / env helpers
 // ---------------------------------------------------------------------------
 
 static BOOL ugg_path_is_jb(const char *path) {
@@ -73,7 +72,6 @@ static BOOL ugg_path_is_jb(const char *path) {
         "/var/lib/apt/", "/var/lib/cydia/",
         "/private/var/lib/apt/", "/etc/apt/",
         "/usr/sbin/frida-server", "/usr/lib/frida",
-        "cydia://", "sileo://",
         NULL
     };
     for (int i = 0; needles[i]; i++) {
@@ -94,7 +92,7 @@ static BOOL ugg_env_is_jb(const char *name) {
 }
 
 // ---------------------------------------------------------------------------
-// C hooks (installed only when antiJailbreak ON)
+// C hooks (installed only when antiJailbreak ON, only for target apps)
 // ---------------------------------------------------------------------------
 
 static int (*orig_access)(const char *, int) = NULL;
@@ -134,7 +132,7 @@ static char *ugg_getenv(const char *n) {
 }
 
 // ---------------------------------------------------------------------------
-// MobileGestalt (installed when fakeDeviceModel or fakeIDFA/IDFV ON)
+// MobileGestalt hook
 // ---------------------------------------------------------------------------
 
 typedef CFTypeRef (*MGCopyAnswer_t)(CFStringRef);
@@ -154,8 +152,24 @@ static CFTypeRef ugg_MGCopyAnswer(CFStringRef key) {
 }
 
 // ---------------------------------------------------------------------------
-// ObjC hooks
+// ObjC hooks — wrapped in %group so they are ONLY installed for target apps
 // ---------------------------------------------------------------------------
+
+static BOOL ugg_text_is_jb(NSString *s) {
+    if (!s || s.length == 0) return NO;
+    static NSArray *needles;
+    static dispatch_once_t t;
+    dispatch_once(&t, ^{ needles = @[
+        @"脱獄", @"改竄", @"セキュリティ", @"システムエラー",
+        @"탈옥", @"루팅", @"비정상", @"지원하지 않",
+        @"jailbreak", @"Jailbreak", @"Jailbroken", @"Rooted", @"Security Alert",
+    ]; });
+    for (NSString *n in needles)
+        if ([s rangeOfString:n options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+    return NO;
+}
+
+%group UggHooks
 
 %hook UIDevice
 - (NSString *)model {
@@ -177,20 +191,6 @@ static CFTypeRef ugg_MGCopyAnswer(CFStringRef key) {
 }
 %end
 
-static BOOL ugg_text_is_jb(NSString *s) {
-    if (!s || s.length == 0) return NO;
-    static NSArray *needles;
-    static dispatch_once_t t;
-    dispatch_once(&t, ^{ needles = @[
-        @"脱獄", @"改竄", @"セキュリティ", @"システムエラー",
-        @"탈옥", @"루팅", @"비정상", @"지원하지 않",
-        @"jailbreak", @"Jailbreak", @"Jailbroken", @"Rooted", @"Security Alert",
-    ]; });
-    for (NSString *n in needles)
-        if ([s rangeOfString:n options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
-    return NO;
-}
-
 %hook UIAlertController
 + (instancetype)alertControllerWithTitle:(NSString *)t message:(NSString *)m preferredStyle:(UIAlertControllerStyle)s {
     if (cfg_antiJailbreak && (ugg_text_is_jb(t) || ugg_text_is_jb(m))) return nil;
@@ -200,7 +200,7 @@ static BOOL ugg_text_is_jb(NSString *s) {
 
 %hook UIViewController
 - (void)presentViewController:(UIViewController *)vc animated:(BOOL)a completion:(void(^)(void))c {
-    if (!vc) { if (c) c(); return; }
+    if (!vc) { %orig; return; }
     if (cfg_antiJailbreak && [vc isKindOfClass:[UIAlertController class]]) {
         UIAlertController *ac = (UIAlertController *)vc;
         if (ugg_text_is_jb(ac.title) || ugg_text_is_jb(ac.message)) { if (c) c(); return; }
@@ -209,14 +209,19 @@ static BOOL ugg_text_is_jb(NSString *s) {
 }
 %end
 
+%end // UggHooks
+
 // ---------------------------------------------------------------------------
 // Constructor
 // ---------------------------------------------------------------------------
 
 %ctor {
-    if (!ugg_load_config()) return; // not a target app or config missing
+    if (!ugg_load_config()) return; // not a target app — install NOTHING
 
-    NSLog(@"[Ugg] 1.2.0 active in %@", NSBundle.mainBundle.bundleIdentifier);
+    // Install ObjC hooks only for target apps
+    %init(UggHooks);
+
+    NSLog(@"[Ugg] 1.3.0 active in %@", NSBundle.mainBundle.bundleIdentifier);
 
     if (cfg_antiJailbreak) {
         MSHookFunction((void *)access,  (void *)ugg_access,  (void **)&orig_access);

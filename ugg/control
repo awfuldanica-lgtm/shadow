@@ -1,6 +1,6 @@
 Package: com.harry.ugg
 Name: Ugg
-Version: 1.2.0
+Version: 1.3.0
 Architecture: iphoneos-arm64
 Section: Tweaks
 Priority: optional
