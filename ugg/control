@@ -1,0 +1,11 @@
+Package: com.harry.ugg
+Name: Ugg
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Section: Tweaks
+Priority: optional
+Depends: firmware (>= 14.0), mobilesubstrate
+Pre-Depends: dpkg
+Description: Jailbreak detection bypass - personal use
+Maintainer: harry
+Author: harry
