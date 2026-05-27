@@ -66,8 +66,6 @@
     }];
     [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
         NSString *newVal = alert.textFields.firstObject.text ?: @"";
-        [[UggConfig.shared mutableDictionaryForKey:key] setValue:newVal forKey:key];
-        // Use KVC to set the right property
         NSString *prop = [self propForKey:key];
         if (prop) [UggConfig.shared setValue:newVal forKey:prop];
         [UggConfig.shared save];
@@ -89,8 +87,4 @@
     return map[key];
 }
 
-@end
-
-@implementation UggConfig (Edit)
-- (NSMutableDictionary *)mutableDictionaryForKey:(NSString *)key { return nil; }
 @end
