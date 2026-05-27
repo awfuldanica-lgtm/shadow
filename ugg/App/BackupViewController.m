@@ -65,7 +65,7 @@ static NSString *const kActiveBackup = @"/var/mobile/Media/Ugg/active_backup";
     return cell;
 }
 
-- (UITableViewCell *)tableView:(UITableView *)tv titleForDeleteConfirmationButtonForRowAtIndexPath:(NSIndexPath *)ip {
+- (NSString *)tableView:(UITableView *)tv titleForDeleteConfirmationButtonForRowAtIndexPath:(NSIndexPath *)ip {
     return @"删除";
 }
 
@@ -104,7 +104,7 @@ static NSString *const kActiveBackup = @"/var/mobile/Media/Ugg/active_backup";
 
 - (UIView *)tableView:(UITableView *)tv viewForFooterInSection:(NSInteger)s {
     if (s != 1) return nil;
-    NSFileSystemAttributes *attr = [[NSFileManager defaultManager]
+    NSDictionary *attr = [[NSFileManager defaultManager]
         attributesOfFileSystemForPath:kBackupDir error:nil];
     long long free = [attr[NSFileSystemFreeSize] longLongValue];
     UILabel *lbl = [[UILabel alloc] init];
