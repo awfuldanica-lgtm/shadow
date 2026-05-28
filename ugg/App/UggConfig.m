@@ -1,5 +1,8 @@
 #import "UggConfig.h"
 #import <sys/utsname.h>
+#import <notify.h>
+
+#define UGG_NOTIFY "com.harry.ugg.reload"
 
 static NSString *randomHex(int bytes) {
     NSMutableString *s = [NSMutableString string];
@@ -113,6 +116,9 @@ static NSString *randomUDID(void) {
     d[kTargetApps] = self.targetApps.allObjects;
 
     [d writeToFile:UGG_PLIST atomically:YES];
+
+    // Tell every running target app to reload config live (no relaunch needed)
+    notify_post(UGG_NOTIFY);
 }
 
 - (void)applyNewDevice {
