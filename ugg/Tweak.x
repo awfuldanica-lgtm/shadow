@@ -1,4 +1,4 @@
-// Ugg 1.7.0 — App+Tweak, SpringBoard hard-excluded
+// Ugg 1.8.0 — App+Tweak, arm64-only (avoids broken arm64e slice / SpringBoard PAC crash)
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -227,7 +227,7 @@ static BOOL ugg_text_is_jb(NSString *s) {
     // Install ObjC hooks only for target apps
     %init(UggHooks);
 
-    NSLog(@"[Ugg] 1.7.0 active in %@", bundle);
+    NSLog(@"[Ugg] 1.8.0 active in %@", bundle);
 
     if (cfg_antiJailbreak) {
         MSHookFunction((void *)access,  (void *)ugg_access,  (void **)&orig_access);

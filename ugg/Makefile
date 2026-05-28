@@ -1,4 +1,9 @@
-ARCHS = arm64 arm64e
+# arm64 ONLY — the CI toolchain emits a broken arm64e slice ("incompatible
+# arm64e ABI compiler") which PAC-faults when ellekit injects it into the
+# arm64e SpringBoard, causing safe mode. arm64-only naturally skips arm64e
+# system processes (SpringBoard) while still injecting into arm64 App Store
+# apps (the actual targets).
+ARCHS = arm64
 TARGET = iphone:clang:latest:14.0
 
 include $(THEOS)/makefiles/common.mk
