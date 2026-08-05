@@ -40,19 +40,6 @@ static NSString *cfg_valSystemVer   = @"";
 // notification reload only refreshes values for processes already targeted.
 static BOOL ugg_is_target = NO;
 
-// ---------------------------------------------------------------------------
-// CLLocationSourceInformation bypass — MSHookMessageEx (no Logos %hook).
-// isSimulatedBySoftware=YES when DTSimulateLocation active (爱思助手/Xcode).
-// ShieldFraud in PayMaya checks this and kills the app.
-// ---------------------------------------------------------------------------
-static BOOL (*orig_isSimulatedBySoftware)(id, SEL) = NULL;
-static BOOL hook_isSimulatedBySoftware(id self, SEL _cmd) { return NO; }
-static void ugg_hook_cllocation(void) {
-    Class cls = NSClassFromString(@"CLLocationSourceInformation");
-    if (!cls) return;
-    MSHookMessageEx(cls, @selector(isSimulatedBySoftware),
-        (IMP)hook_isSimulatedBySoftware, (IMP *)&orig_isSimulatedBySoftware);
-}
 
 static BOOL ugg_load_config(void) {
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:@UGG_PLIST];
@@ -362,8 +349,17 @@ static NSUUID *ugg_uuid(NSString *s) {
     if ([bundle isEqualToString:@"com.apple.springboard"] ||
         [bundle isEqualToString:@"com.apple.SpringBoard"]) return;
 
-    // CLLocation bypass: unconditional for all UIKit apps, no config needed.
-    ugg_hook_cllocation();
+    // CLLocation bypass (unconditional, no config needed):
+    // ShieldFraud in PayMaya checks CLLocationSourceInformation.isSimulatedBySoftware
+    // when 爱思助手/DTSimulateLocation is active. Suppress via ObjC runtime.
+    {
+        Class clsInfo = NSClassFromString(@"CLLocationSourceInformation");
+        if (clsInfo) {
+            Method m = class_getInstanceMethod(clsInfo, @selector(isSimulatedBySoftware));
+            if (m) method_setImplementation(m,
+                imp_implementationWithBlock(^BOOL(id self) { return NO; }));
+        }
+    }
 
     if (!ugg_load_config()) return; // not a target app — install NOTHING
     ugg_is_target = YES;

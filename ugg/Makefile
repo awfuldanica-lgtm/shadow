@@ -26,7 +26,7 @@ Ugg_INFO_PLIST_PATH = App/Info.plist
 # ---------- Tweak ----------
 TWEAK_NAME = ugg
 ugg_FILES = Tweak.x
-ugg_FRAMEWORKS = Foundation UIKit CoreLocation
+ugg_FRAMEWORKS = Foundation UIKit
 ugg_CFLAGS = -fobjc-arc
 
 include $(THEOS_MAKE_PATH)/application.mk
