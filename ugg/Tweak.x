@@ -328,16 +328,6 @@ static NSUUID *ugg_uuid(NSString *s) {
 
 %end // UggHooks
 
-// CLLocation simulation bypass — installed unconditionally for ALL UIKit apps,
-// no target-app config required. iOS 15+ DTSimulateLocation (爱思助手/Xcode)
-// sets isSimulatedBySoftware=YES; ShieldFraud reads this and kills PayMaya.
-%group UggCLBypass
-%hook CLLocationSourceInformation
-- (BOOL)isSimulatedBySoftware { return NO; }
-- (BOOL)isProducedByAccessory { return %orig; }
-%end
-%end // UggCLBypass
-
 // IDFA lives in AdSupport; hooked in its own group, only initialised when the
 // class is actually present (banking apps may not link AdSupport).
 %group UggAS
@@ -350,6 +340,22 @@ static NSUUID *ugg_uuid(NSString *s) {
 %end // UggAS
 
 // ---------------------------------------------------------------------------
+// CLLocationSourceInformation bypass — via MSHookMessageEx, no Logos %hook.
+// iOS 15+ DTSimulateLocation (爱思助手/Xcode) sets isSimulatedBySoftware=YES.
+// ShieldFraud (in PayMaya) reads this field and kills the app.
+// ---------------------------------------------------------------------------
+
+static BOOL (*orig_isSimulatedBySoftware)(id, SEL) = NULL;
+static BOOL hook_isSimulatedBySoftware(id self, SEL _cmd) { return NO; }
+
+static void ugg_hook_cllocation(void) {
+    Class cls = NSClassFromString(@"CLLocationSourceInformation");
+    if (!cls) return;
+    MSHookMessageEx(cls, @selector(isSimulatedBySoftware),
+        (IMP)hook_isSimulatedBySoftware, (IMP *)&orig_isSimulatedBySoftware);
+}
+
+// ---------------------------------------------------------------------------
 // Constructor
 // ---------------------------------------------------------------------------
 
@@ -360,10 +366,8 @@ static NSUUID *ugg_uuid(NSString *s) {
     if ([bundle isEqualToString:@"com.apple.springboard"] ||
         [bundle isEqualToString:@"com.apple.SpringBoard"]) return;
 
-    // CLLocation bypass is unconditional — applies to all UIKit apps without
-    // any configuration needed (no target-app setup required in Ugg app).
-    if (NSClassFromString(@"CLLocationSourceInformation"))
-        %init(UggCLBypass);
+    // CLLocation bypass: unconditional for all UIKit apps, no config needed.
+    ugg_hook_cllocation();
 
     if (!ugg_load_config()) return; // not a target app — install NOTHING
     ugg_is_target = YES;
