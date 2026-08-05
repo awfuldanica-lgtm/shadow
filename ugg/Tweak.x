@@ -329,10 +329,16 @@ typedef void (^UggVoidBlock)(void);
 
 %hook UIViewController
 - (void)presentViewController:(UIViewController *)vc animated:(BOOL)a completion:(UggVoidBlock)c {
-    if (!vc) { %orig; return; }
-    if (cfg_antiJailbreak && [vc isKindOfClass:[UIAlertController class]]) {
+    BOOL suppress = NO;
+    if (vc && cfg_antiJailbreak && [vc isKindOfClass:[UIAlertController class]]) {
         UIAlertController *ac = (UIAlertController *)vc;
-        if (ugg_text_is_jb(ac.title) || ugg_text_is_jb(ac.message)) { if (c) c(); return; }
+        if (ugg_text_is_jb(ac.title) || ugg_text_is_jb(ac.message)) {
+            suppress = YES;
+        }
+    }
+    if (suppress) {
+        if (c) c();
+        return;
     }
     %orig;
 }
