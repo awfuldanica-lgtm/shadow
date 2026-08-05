@@ -243,6 +243,10 @@ static NSUUID *ugg_uuid(NSString *s) {
     return [[NSUUID alloc] initWithUUIDString:s];
 }
 
+// File-level statics for canOpenURL (can't use static locals inside %hook with new Logos)
+static NSArray *_ugg_schemes;
+static dispatch_once_t _ugg_schemes_once;
+
 %group UggHooks
 
 %hook UIDevice
@@ -300,11 +304,11 @@ static NSUUID *ugg_uuid(NSString *s) {
 - (BOOL)canOpenURL:(NSURL *)url {
     if (cfg_antiJailbreak && url.scheme) {
         NSString *s = url.scheme.lowercaseString;
-        static NSArray *schemes;
-        static dispatch_once_t t;
-        dispatch_once(&t, ^{ schemes = @[@"cydia", @"sileo", @"zbra", @"filza",
-            @"undecimus", @"activator", @"installer", @"apt-repo"]; });
-        if ([schemes containsObject:s]) return NO;
+        dispatch_once(&_ugg_schemes_once, ^{
+            _ugg_schemes = @[@"cydia", @"sileo", @"zbra", @"filza",
+                @"undecimus", @"activator", @"installer", @"apt-repo"];
+        });
+        if ([_ugg_schemes containsObject:s]) return NO;
     }
     return %orig;
 }
