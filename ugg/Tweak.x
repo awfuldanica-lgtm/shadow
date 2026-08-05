@@ -1,4 +1,4 @@
-// Ugg 1.9.0 — App+Tweak, arm64-only. AMG-parity spoofing + live config reload.
+// Ugg 2.0.0 — App+Tweak, arm64-only. AMG-parity spoofing + CLLocation simulation bypass.
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -13,6 +13,13 @@
 #import <string.h>
 #import <dirent.h>
 #import <notify.h>
+
+// CLLocationSourceInformation (iOS 15+) — forward-declared to avoid availability
+// warnings. isSimulatedBySoftware=YES when DTSimulateLocation is active (爱思助手/Xcode).
+@interface CLLocationSourceInformation : NSObject
+- (BOOL)isSimulatedBySoftware;
+- (BOOL)isProducedByAccessory;
+@end
 
 #define UGG_PLIST   "/var/mobile/Library/Preferences/com.harry.ugg.plist"
 #define UGG_NOTIFY  "com.harry.ugg.reload"   // App posts this after saving config
@@ -83,6 +90,9 @@ static BOOL ugg_path_is_jb(const char *path) {
         "/var/lib/apt/", "/var/lib/cydia/",
         "/private/var/lib/apt/", "/etc/apt/",
         "/usr/sbin/frida-server", "/usr/lib/frida",
+        "/Library/PreferenceBundles/ShadowPreferences.bundle",
+        "/Library/PreferenceBundles/ABypassPrefs.bundle",
+        "/Library/PreferenceBundles/LibertyPref.bundle",
         NULL
     };
     for (int i = 0; needles[i]; i++) {
@@ -323,6 +333,14 @@ static NSUUID *ugg_uuid(NSString *s) {
 }
 %end
 
+// iOS 15+: CLLocationSourceInformation.isSimulatedBySoftware=YES when
+// DTSimulateLocation is active (爱思助手/Xcode). ShieldFraud checks this
+// field ("simulated_by_software") and kills PayMaya. Hook to suppress it.
+%hook CLLocationSourceInformation
+- (BOOL)isSimulatedBySoftware { return cfg_antiJailbreak ? NO : %orig; }
+- (BOOL)isProducedByAccessory { return %orig; }
+%end
+
 %end // UggHooks
 
 // IDFA lives in AdSupport; hooked in its own group, only initialised when the
@@ -354,7 +372,7 @@ static NSUUID *ugg_uuid(NSString *s) {
     %init(UggHooks);
     if (NSClassFromString(@"ASIdentifierManager")) %init(UggAS);
 
-    NSLog(@"[Ugg] 1.9.0 active in %@", bundle);
+    NSLog(@"[Ugg] 2.0.0 active in %@", bundle);
 
     // C hooks installed unconditionally; each gates on cfg internally so the
     // anti-JB / model toggles take effect without relaunching the app.
