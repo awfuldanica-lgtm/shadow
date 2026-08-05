@@ -40,6 +40,20 @@ static NSString *cfg_valSystemVer   = @"";
 // notification reload only refreshes values for processes already targeted.
 static BOOL ugg_is_target = NO;
 
+// ---------------------------------------------------------------------------
+// CLLocationSourceInformation bypass — MSHookMessageEx (no Logos %hook).
+// isSimulatedBySoftware=YES when DTSimulateLocation active (爱思助手/Xcode).
+// ShieldFraud in PayMaya checks this and kills the app.
+// ---------------------------------------------------------------------------
+static BOOL (*orig_isSimulatedBySoftware)(id, SEL) = NULL;
+static BOOL hook_isSimulatedBySoftware(id self, SEL _cmd) { return NO; }
+static void ugg_hook_cllocation(void) {
+    Class cls = NSClassFromString(@"CLLocationSourceInformation");
+    if (!cls) return;
+    MSHookMessageEx(cls, @selector(isSimulatedBySoftware),
+        (IMP)hook_isSimulatedBySoftware, (IMP *)&orig_isSimulatedBySoftware);
+}
+
 static BOOL ugg_load_config(void) {
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:@UGG_PLIST];
     if (!d) return NO;
@@ -328,8 +342,6 @@ static NSUUID *ugg_uuid(NSString *s) {
 
 %end // UggHooks
 
-// IDFA lives in AdSupport; hooked in its own group, only initialised when the
-// class is actually present (banking apps may not link AdSupport).
 %group UggAS
 %hook ASIdentifierManager
 - (NSUUID *)advertisingIdentifier {
@@ -338,22 +350,6 @@ static NSUUID *ugg_uuid(NSString *s) {
 }
 %end
 %end // UggAS
-
-// ---------------------------------------------------------------------------
-// CLLocationSourceInformation bypass — via MSHookMessageEx, no Logos %hook.
-// iOS 15+ DTSimulateLocation (爱思助手/Xcode) sets isSimulatedBySoftware=YES.
-// ShieldFraud (in PayMaya) reads this field and kills the app.
-// ---------------------------------------------------------------------------
-
-static BOOL (*orig_isSimulatedBySoftware)(id, SEL) = NULL;
-static BOOL hook_isSimulatedBySoftware(id self, SEL _cmd) { return NO; }
-
-static void ugg_hook_cllocation(void) {
-    Class cls = NSClassFromString(@"CLLocationSourceInformation");
-    if (!cls) return;
-    MSHookMessageEx(cls, @selector(isSimulatedBySoftware),
-        (IMP)hook_isSimulatedBySoftware, (IMP *)&orig_isSimulatedBySoftware);
-}
 
 // ---------------------------------------------------------------------------
 // Constructor
