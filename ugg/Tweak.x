@@ -243,11 +243,16 @@ static NSUUID *ugg_uuid(NSString *s) {
     return [[NSUUID alloc] initWithUUIDString:s];
 }
 
-// File-level statics for canOpenURL (can't use static locals inside %hook with new Logos)
+// File-level statics for canOpenURL
 static NSArray *_ugg_schemes;
 static dispatch_once_t _ugg_schemes_once;
 
-%group UggHooks
+// Block type alias — avoids Logos parser confusion with inline ^void block types
+typedef void (^UggVoidBlock)(void);
+
+// ---------------------------------------------------------------------------
+// ObjC hooks — top-level (no %group); %init called only for target apps
+// ---------------------------------------------------------------------------
 
 %hook UIDevice
 - (NSString *)model {
@@ -294,7 +299,8 @@ static dispatch_once_t _ugg_schemes_once;
 }
 - (BOOL)fileExistsAtPath:(NSString *)path isDirectory:(BOOL *)isDir {
     if (cfg_antiJailbreak && path && ugg_path_is_jb(path.UTF8String)) {
-        if (isDir) *isDir = NO; return NO;
+        if (isDir) *isDir = NO;
+        return NO;
     }
     return %orig;
 }
@@ -322,7 +328,7 @@ static dispatch_once_t _ugg_schemes_once;
 %end
 
 %hook UIViewController
-- (void)presentViewController:(UIViewController *)vc animated:(BOOL)a completion:(void(^)(void))c {
+- (void)presentViewController:(UIViewController *)vc animated:(BOOL)a completion:(UggVoidBlock)c {
     if (!vc) { %orig; return; }
     if (cfg_antiJailbreak && [vc isKindOfClass:[UIAlertController class]]) {
         UIAlertController *ac = (UIAlertController *)vc;
@@ -332,18 +338,12 @@ static dispatch_once_t _ugg_schemes_once;
 }
 %end
 
-%end // UggHooks
-
-// IDFA lives in AdSupport; hooked in its own group, only initialised when the
-// class is actually present (banking apps may not link AdSupport).
-%group UggAS
 %hook ASIdentifierManager
 - (NSUUID *)advertisingIdentifier {
     if (cfg_fakeIDFA) { NSUUID *u = ugg_uuid(cfg_valIDFA); if (u) return u; }
     return %orig;
 }
 %end
-%end // UggAS
 
 // ---------------------------------------------------------------------------
 // Constructor
@@ -370,9 +370,9 @@ static dispatch_once_t _ugg_schemes_once;
     if (!ugg_load_config()) return; // not a target app — install NOTHING
     ugg_is_target = YES;
 
-    // ObjC hooks (behaviour gated per-call by cfg, so toggles apply live)
-    %init(UggHooks);
-    if (NSClassFromString(@"ASIdentifierManager")) %init(UggAS);
+    // ObjC hooks — single %init installs all; missing classes (ASIdentifierManager
+    // in apps that don't link AdSupport) are silently skipped by Logos.
+    %init;
 
     NSLog(@"[Ugg] 2.0.0 active in %@", bundle);
 
