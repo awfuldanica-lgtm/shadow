@@ -1,4 +1,4 @@
-// Ugg 2.0.0 — App+Tweak, arm64-only. AMG-parity spoofing + CLLocation simulation bypass.
+// Ugg 1.9.0 — App+Tweak, arm64-only. AMG-parity spoofing + live config reload.
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -39,7 +39,6 @@ static NSString *cfg_valSystemVer   = @"";
 // Whether the current process is a configured target. Set once at ctor; the
 // notification reload only refreshes values for processes already targeted.
 static BOOL ugg_is_target = NO;
-
 
 static BOOL ugg_load_config(void) {
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:@UGG_PLIST];
@@ -84,9 +83,6 @@ static BOOL ugg_path_is_jb(const char *path) {
         "/var/lib/apt/", "/var/lib/cydia/",
         "/private/var/lib/apt/", "/etc/apt/",
         "/usr/sbin/frida-server", "/usr/lib/frida",
-        "/Library/PreferenceBundles/ShadowPreferences.bundle",
-        "/Library/PreferenceBundles/ABypassPrefs.bundle",
-        "/Library/PreferenceBundles/LibertyPref.bundle",
         NULL
     };
     for (int i = 0; needles[i]; i++) {
@@ -329,6 +325,8 @@ static NSUUID *ugg_uuid(NSString *s) {
 
 %end // UggHooks
 
+// IDFA lives in AdSupport; hooked in its own group, only initialised when the
+// class is actually present (banking apps may not link AdSupport).
 %group UggAS
 %hook ASIdentifierManager
 - (NSUUID *)advertisingIdentifier {
@@ -349,18 +347,6 @@ static NSUUID *ugg_uuid(NSString *s) {
     if ([bundle isEqualToString:@"com.apple.springboard"] ||
         [bundle isEqualToString:@"com.apple.SpringBoard"]) return;
 
-    // CLLocation bypass (unconditional, no config needed):
-    // ShieldFraud in PayMaya checks CLLocationSourceInformation.isSimulatedBySoftware
-    // when 爱思助手/DTSimulateLocation is active. Suppress via ObjC runtime.
-    {
-        Class clsInfo = NSClassFromString(@"CLLocationSourceInformation");
-        if (clsInfo) {
-            Method m = class_getInstanceMethod(clsInfo, @selector(isSimulatedBySoftware));
-            if (m) method_setImplementation(m,
-                imp_implementationWithBlock(^BOOL(id self) { return NO; }));
-        }
-    }
-
     if (!ugg_load_config()) return; // not a target app — install NOTHING
     ugg_is_target = YES;
 
@@ -368,7 +354,7 @@ static NSUUID *ugg_uuid(NSString *s) {
     %init(UggHooks);
     if (NSClassFromString(@"ASIdentifierManager")) %init(UggAS);
 
-    NSLog(@"[Ugg] 2.0.0 active in %@", bundle);
+    NSLog(@"[Ugg] 1.9.0 active in %@", bundle);
 
     // C hooks installed unconditionally; each gates on cfg internally so the
     // anti-JB / model toggles take effect without relaunching the app.
