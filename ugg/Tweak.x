@@ -333,15 +333,17 @@ static NSUUID *ugg_uuid(NSString *s) {
 }
 %end
 
-// iOS 15+: CLLocationSourceInformation.isSimulatedBySoftware=YES when
-// DTSimulateLocation is active (爱思助手/Xcode). ShieldFraud checks this
-// field ("simulated_by_software") and kills PayMaya. Hook to suppress it.
+%end // UggHooks
+
+// CLLocation simulation bypass — installed unconditionally for ALL UIKit apps,
+// no target-app config required. iOS 15+ DTSimulateLocation (爱思助手/Xcode)
+// sets isSimulatedBySoftware=YES; ShieldFraud reads this and kills PayMaya.
+%group UggCLBypass
 %hook CLLocationSourceInformation
-- (BOOL)isSimulatedBySoftware { return cfg_antiJailbreak ? NO : %orig; }
+- (BOOL)isSimulatedBySoftware { return NO; }
 - (BOOL)isProducedByAccessory { return %orig; }
 %end
-
-%end // UggHooks
+%end // UggCLBypass
 
 // IDFA lives in AdSupport; hooked in its own group, only initialised when the
 // class is actually present (banking apps may not link AdSupport).
@@ -364,6 +366,11 @@ static NSUUID *ugg_uuid(NSString *s) {
     if (!bundle) return;
     if ([bundle isEqualToString:@"com.apple.springboard"] ||
         [bundle isEqualToString:@"com.apple.SpringBoard"]) return;
+
+    // CLLocation bypass is unconditional — applies to all UIKit apps without
+    // any configuration needed (no target-app setup required in Ugg app).
+    if (NSClassFromString(@"CLLocationSourceInformation"))
+        %init(UggCLBypass);
 
     if (!ugg_load_config()) return; // not a target app — install NOTHING
     ugg_is_target = YES;
