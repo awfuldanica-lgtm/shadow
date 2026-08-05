@@ -1,4 +1,4 @@
-// Ugg 1.9.0 — App+Tweak, arm64-only. AMG-parity spoofing + live config reload.
+// Ugg 2.0.0 — App+Tweak, arm64-only. AMG-parity spoofing + CLLocation bypass.
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -83,6 +83,9 @@ static BOOL ugg_path_is_jb(const char *path) {
         "/var/lib/apt/", "/var/lib/cydia/",
         "/private/var/lib/apt/", "/etc/apt/",
         "/usr/sbin/frida-server", "/usr/lib/frida",
+        "/Library/PreferenceBundles/ShadowPreferences.bundle",
+        "/Library/PreferenceBundles/ABypassPrefs.bundle",
+        "/Library/PreferenceBundles/LibertyPref.bundle",
         NULL
     };
     for (int i = 0; needles[i]; i++) {
@@ -243,10 +246,12 @@ static NSUUID *ugg_uuid(NSString *s) {
 %group UggHooks
 
 %hook UIDevice
-// model returns the generic family ("iPhone"); the model identifier
-// (iPhone11,8) is spoofed via sysctl hw.machine + MobileGestalt.
-- (NSString *)model        { return cfg_fakeDeviceModel ? @"iPhone" : %orig; }
-- (NSString *)localizedModel { return cfg_fakeDeviceModel ? @"iPhone" : %orig; }
+- (NSString *)model {
+    return cfg_fakeDeviceModel ? @"iPhone" : %orig;
+}
+- (NSString *)localizedModel {
+    return cfg_fakeDeviceModel ? @"iPhone" : %orig;
+}
 - (NSString *)name {
     return (cfg_fakeName && cfg_valDeviceName.length) ? cfg_valDeviceName : %orig;
 }
@@ -347,6 +352,17 @@ static NSUUID *ugg_uuid(NSString *s) {
     if ([bundle isEqualToString:@"com.apple.springboard"] ||
         [bundle isEqualToString:@"com.apple.SpringBoard"]) return;
 
+    // CLLocation bypass (unconditional): ShieldFraud in PayMaya checks
+    // CLLocationSourceInformation.isSimulatedBySoftware when 爱思助手 is active.
+    {
+        Class clsInfo = NSClassFromString(@"CLLocationSourceInformation");
+        if (clsInfo) {
+            Method m = class_getInstanceMethod(clsInfo, @selector(isSimulatedBySoftware));
+            if (m) method_setImplementation(m,
+                imp_implementationWithBlock(^BOOL(id self) { return NO; }));
+        }
+    }
+
     if (!ugg_load_config()) return; // not a target app — install NOTHING
     ugg_is_target = YES;
 
@@ -354,7 +370,7 @@ static NSUUID *ugg_uuid(NSString *s) {
     %init(UggHooks);
     if (NSClassFromString(@"ASIdentifierManager")) %init(UggAS);
 
-    NSLog(@"[Ugg] 1.9.0 active in %@", bundle);
+    NSLog(@"[Ugg] 2.0.0 active in %@", bundle);
 
     // C hooks installed unconditionally; each gates on cfg internally so the
     // anti-JB / model toggles take effect without relaunching the app.
