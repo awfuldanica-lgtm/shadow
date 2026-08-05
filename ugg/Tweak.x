@@ -14,13 +14,6 @@
 #import <dirent.h>
 #import <notify.h>
 
-// CLLocationSourceInformation (iOS 15+) — forward-declared to avoid availability
-// warnings. isSimulatedBySoftware=YES when DTSimulateLocation is active (爱思助手/Xcode).
-@interface CLLocationSourceInformation : NSObject
-- (BOOL)isSimulatedBySoftware;
-- (BOOL)isProducedByAccessory;
-@end
-
 #define UGG_PLIST   "/var/mobile/Library/Preferences/com.harry.ugg.plist"
 #define UGG_NOTIFY  "com.harry.ugg.reload"   // App posts this after saving config
 
